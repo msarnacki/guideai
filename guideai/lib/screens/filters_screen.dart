@@ -138,7 +138,11 @@ class _FiltersScreenState extends State<FiltersScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => MapScreen(startPoint: _startPoint!, endPoint: _endPoint),
+        builder: (_) => MapScreen(
+          startPoint: _startPoint!,
+          endPoint: _endPoint,
+          targetDistanceMeters: _distanceKm * 1000,
+        ),
       ),
     );
   }
@@ -224,7 +228,7 @@ class _FiltersScreenState extends State<FiltersScreen> {
             _sectionTitle('Punkt końcowy'),
             const SizedBox(height: 4),
             const Text(
-              'Opcjonalny — nie wpływa jeszcze na wyniki',
+              'Opcjonalny — wymagany do planowania trasy przez miejsca',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 12),
@@ -241,7 +245,7 @@ class _FiltersScreenState extends State<FiltersScreen> {
             _sectionTitle('Dystans spaceru'),
             const SizedBox(height: 4),
             const Text(
-              'Placeholder — nie wpływa jeszcze na wyniki',
+              'Używany gdy wybrano punkt startowy i końcowy',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 8),

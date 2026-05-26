@@ -3,16 +3,16 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import '../models/route_result.dart';
 
-/// Wyznacza pieszą trasę między [start] a [end] używając publicznego serwera
-/// OSRM (OpenStreetMap.de) z profilem pieszym.
-///
-/// Zwraca [RouteResult] z listą punktów trasy, dystansem w metrach
-/// i szacowanym czasem przejścia w sekundach.
-Future<RouteResult> fetchRoute(LatLng start, LatLng end) async {
+/// Wyznacza pieszą trasę przez [waypoints] (minimum 2 punkty) używając
+/// publicznego serwera OSRM z profilem pieszym.
+Future<RouteResult> fetchRouteMulti(List<LatLng> waypoints) async {
+  assert(waypoints.length >= 2, 'Wymagane co najmniej 2 punkty');
+
+  final coords =
+      waypoints.map((p) => '${p.longitude},${p.latitude}').join(';');
+
   final url = Uri.parse(
-    'https://routing.openstreetmap.de/routed-foot/route/v1/foot/'
-    '${start.longitude},${start.latitude};'
-    '${end.longitude},${end.latitude}'
+    'https://routing.openstreetmap.de/routed-foot/route/v1/foot/$coords'
     '?overview=full&geometries=geojson',
   );
 
@@ -35,9 +35,9 @@ Future<RouteResult> fetchRoute(LatLng start, LatLng end) async {
   final double distanceMeters = (route['distance'] as num).toDouble();
   final double durationSeconds = (route['duration'] as num).toDouble();
 
-  // GeoJSON zwraca współrzędne jako [lon, lat]
-  final coords = route['geometry']['coordinates'] as List;
-  final points = coords
+  // GeoJSON zwraca [lon, lat]
+  final rawCoords = route['geometry']['coordinates'] as List;
+  final points = rawCoords
       .map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble()))
       .toList();
 
@@ -47,3 +47,7 @@ Future<RouteResult> fetchRoute(LatLng start, LatLng end) async {
     durationSeconds: durationSeconds,
   );
 }
+
+/// Skrót dla trasy dwupunktowej.
+Future<RouteResult> fetchRoute(LatLng start, LatLng end) =>
+    fetchRouteMulti([start, end]);
