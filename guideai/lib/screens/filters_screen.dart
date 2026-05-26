@@ -135,7 +135,7 @@ class _FiltersScreenState extends State<FiltersScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => MapScreen(startPoint: _startPoint!),
+        builder: (_) => MapScreen(startPoint: _startPoint!, endPoint: _endPoint),
       ),
     );
   }

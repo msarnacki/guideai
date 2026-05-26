@@ -1,18 +1,22 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import '../models/war_place.dart';
 
-/// Pobiera do 5 miejsc historycznych (memoriały) w promieniu 1 km od [startPoint].
-Future<List<WarPlace>> fetchWarPlaces(LatLng startPoint) async {
-  final lat = startPoint.latitude;
-  final lon = startPoint.longitude;
-
-  final query = '''
-[out:json][timeout:25];
-node["historic"="memorial"](around:1000,$lat,$lon);
-out 5;
-''';
+/// Pobiera do 100 miejsc historycznych (memoriały) w obszarze wyznaczonym
+/// przez [startPoint] i opcjonalny [endPoint].
+///
+/// Gdy podany jest tylko [startPoint], stosuje okrąg o promieniu 1 km.
+/// Gdy podane są oba punkty, używa bounding boxa okalającego obydwa punkty
+/// z 15% paddingiem po każdej stronie.
+Future<List<WarPlace>> fetchWarPlaces(
+  LatLng startPoint, {
+  LatLng? endPoint,
+}) async {
+  final query = endPoint != null
+      ? _buildBboxQuery(startPoint, endPoint)
+      : _buildRadiusQuery(startPoint);
 
   final encoded = Uri.encodeComponent(query);
   final url = 'https://overpass-api.de/api/interpreter?data=$encoded';
@@ -46,4 +50,44 @@ out 5;
   }
 
   return places;
+}
+
+// ── Budowanie zapytań ─────────────────────────────────────────────────────────
+
+/// Okrąg 1 km wokół jednego punktu.
+String _buildRadiusQuery(LatLng point) {
+  final lat = point.latitude;
+  final lon = point.longitude;
+  return '''
+[out:json][timeout:30];
+node["historic"="memorial"](around:1000,$lat,$lon);
+out 100;
+''';
+}
+
+/// Bounding box okalający oba punkty + 15% paddingu z każdej strony.
+/// Minimalne rozszerzenie: ~500 m (~0.005°), żeby obszar nie był za mały
+/// gdy punkty są blisko siebie.
+String _buildBboxQuery(LatLng start, LatLng end) {
+  const padding = 0.15; // 15%
+  const minPad = 0.005; // ~500 m
+
+  final minLat = min(start.latitude, end.latitude);
+  final maxLat = max(start.latitude, end.latitude);
+  final minLon = min(start.longitude, end.longitude);
+  final maxLon = max(start.longitude, end.longitude);
+
+  final latPad = max((maxLat - minLat) * padding, minPad);
+  final lonPad = max((maxLon - minLon) * padding, minPad);
+
+  final south = minLat - latPad;
+  final north = maxLat + latPad;
+  final west  = minLon - lonPad;
+  final east  = maxLon + lonPad;
+
+  return '''
+[out:json][timeout:30];
+node["historic"="memorial"]($south,$west,$north,$east);
+out 100;
+''';
 }
