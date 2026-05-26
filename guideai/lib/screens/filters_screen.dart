@@ -22,6 +22,9 @@ class _FiltersScreenState extends State<FiltersScreen> {
   bool _loadingEndLocation = false;
   String? _endLabel;
 
+  // Dystans (placeholder)
+  double _distanceKm = 5.0;
+
   // ── GPS: pobierz aktualną lokalizację ──────────────────────────────────────
   Future<LatLng?> _getGpsLocation() async {
     final location = Location();
@@ -231,6 +234,39 @@ class _FiltersScreenState extends State<FiltersScreen> {
               onMap: _pickEndFromMap,
             ),
             if (_endLabel != null) _selectedPointInfo(_endLabel!),
+
+            const SizedBox(height: 28),
+
+            // ── Dystans ─────────────────────────────────────────────────────
+            _sectionTitle('Dystans spaceru'),
+            const SizedBox(height: 4),
+            const Text(
+              'Placeholder — nie wpływa jeszcze na wyniki',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Text('1 km', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                Expanded(
+                  child: Slider(
+                    value: _distanceKm,
+                    min: 1,
+                    max: 20,
+                    divisions: 19,
+                    label: '${_distanceKm.round()} km',
+                    onChanged: (v) => setState(() => _distanceKm = v),
+                  ),
+                ),
+                const Text('20 km', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
+            ),
+            Center(
+              child: Text(
+                '${_distanceKm.round()} km',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ),
 
             const Spacer(),
 

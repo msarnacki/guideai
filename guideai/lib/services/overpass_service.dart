@@ -60,8 +60,11 @@ String _buildRadiusQuery(LatLng point) {
   final lon = point.longitude;
   return '''
 [out:json][timeout:30];
-node["historic"="memorial"](around:1000,$lat,$lon);
-out 100;
+(
+  node["historic"="memorial"](around:1000,$lat,$lon);
+  way["historic"="memorial"](around:1000,$lat,$lon);
+);
+out center 100;
 ''';
 }
 
