@@ -12,6 +12,9 @@ const double _roadFactor = 1.3;
 /// Minimalna odległość między miejscami — bliżej = duplikat/skupisko.
 const double _minPlaceDistMeters = 80.0;
 
+/// Minimalny wynik bogactwa opisu — punkty poniżej progu są odrzucane.
+const int _minRichnessScore = 2;
+
 // ── Publiczne API ──────────────────────────────────────────────────────────────
 
 /// Planuje trasę [start] → [wybrane miejsca] → [end] o szacowanym dystansie
@@ -29,11 +32,16 @@ Future<PlannerResult> planRoute({
   required List<InterestPoint> candidates,
   required double targetMeters,
 }) async {
-  // 1. Deduplikacja
-  final deduped = _deduplicate(candidates);
+  // 1. Deduplikacja — kandydaci do trasy + odsunięte skupiska
+  final dedupeResult = _deduplicate(candidates);
+  final deduped = dedupeResult.candidates;
+  final sidelined = dedupeResult.sidelined;
+
+  // 1b. Filtruj słabo opisane punkty
+  final rich = deduped.where((p) => _richnessScore(p.tags) >= _minRichnessScore).toList();
 
   // 2. Sortuj: im bliżej linii A→B, tym wyższy priorytet
-  final sorted = [...deduped]
+  final sorted = [...rich]
     ..sort((a, b) {
       final dA = _pointToSegmentDist(a.position, start, end);
       final dB = _pointToSegmentDist(b.position, start, end);
@@ -86,7 +94,21 @@ Future<PlannerResult> planRoute({
     orderedSelected.add(match);
   }
 
-  return PlannerResult(selectedPlaces: orderedSelected, route: route);
+  // Zdeduplikowane punkty leżące blisko polilinii trasy.
+  final nearbyPlaces = _filterNearRoute(sidelined, route.points);
+
+  // Połącz i posortuj wszystkie miejsca wzdłuż trasy.
+  final allPlacesOrdered = _sortByRouteProgress(
+    [...orderedSelected, ...nearbyPlaces],
+    route.points,
+  );
+
+  return PlannerResult(
+    selectedPlaces: orderedSelected,
+    nearbyPlaces: nearbyPlaces,
+    allPlacesOrdered: allPlacesOrdered,
+    route: route,
+  );
 }
 
 // ── Funkcje pomocnicze ─────────────────────────────────────────────────────────
@@ -117,16 +139,91 @@ double _estimateDistance(List<LatLng> waypoints) {
   return total * _roadFactor;
 }
 
-/// Usuwa miejsca bliższe niż [_minPlaceDistMeters] od już dodanych (skupiska).
-List<InterestPoint> _deduplicate(List<InterestPoint> places) {
-  final result = <InterestPoint>[];
+/// Rozdziela miejsca na kandydatów trasy i odsunięte skupiska (< [_minPlaceDistMeters]).
+/// Odsunięte punkty mogą później trafić na mapę jako pobliskie atrakcje.
+({List<InterestPoint> candidates, List<InterestPoint> sidelined})
+    _deduplicate(List<InterestPoint> places) {
+  final candidates = <InterestPoint>[];
+  final sidelined = <InterestPoint>[];
   for (final place in places) {
-    final tooClose = result.any(
+    final tooClose = candidates.any(
       (p) => _haversine(p.position, place.position) < _minPlaceDistMeters,
     );
-    if (!tooClose) result.add(place);
+    if (tooClose) {
+      sidelined.add(place);
+    } else {
+      candidates.add(place);
+    }
   }
-  return result;
+  return (candidates: candidates, sidelined: sidelined);
+}
+
+/// Zwraca punkty z [sidelined] leżące ≤ [maxDistMeters] od polilinii trasy,
+/// posortowane wzdłuż trasy.
+List<InterestPoint> _filterNearRoute(
+  List<InterestPoint> sidelined,
+  List<LatLng> polyline, {
+  double maxDistMeters = 50.0,
+}) {
+  if (polyline.length < 2) return [];
+
+  final nearby = <({InterestPoint point, int segIdx})>[];
+  for (final place in sidelined) {
+    double minDist = double.infinity;
+    int closestSeg = 0;
+    for (int i = 0; i < polyline.length - 1; i++) {
+      final d = _pointToSegmentDist(place.position, polyline[i], polyline[i + 1]);
+      if (d < minDist) {
+        minDist = d;
+        closestSeg = i;
+      }
+    }
+    if (minDist <= maxDistMeters) {
+      nearby.add((point: place, segIdx: closestSeg));
+    }
+  }
+
+  nearby.sort((a, b) => a.segIdx.compareTo(b.segIdx));
+  return nearby.map((e) => e.point).toList();
+}
+
+/// Sortuje miejsca wg pozycji wzdłuż polilinii trasy.
+List<InterestPoint> _sortByRouteProgress(
+  List<InterestPoint> places,
+  List<LatLng> polyline,
+) {
+  if (polyline.length < 2) return places;
+  return [...places]..sort((a, b) {
+      final ia = _closestSegmentIndex(a.position, polyline);
+      final ib = _closestSegmentIndex(b.position, polyline);
+      return ia.compareTo(ib);
+    });
+}
+
+int _closestSegmentIndex(LatLng point, List<LatLng> polyline) {
+  int best = 0;
+  double bestDist = double.infinity;
+  for (int i = 0; i < polyline.length - 1; i++) {
+    final d = _pointToSegmentDist(point, polyline[i], polyline[i + 1]);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/// Ocenia bogactwo opisu punktu na podstawie tagów OSM.
+/// Wynik ≥ [_minRichnessScore] = punkt wart uwzględnienia w trasie.
+int _richnessScore(Map<String, dynamic> tags) {
+  int score = 0;
+  if (tags.containsKey('wikidata') || tags.containsKey('wikipedia')) score += 3;
+  if (tags.containsKey('description')) score += 2;
+  if (tags.containsKey('website') || tags.containsKey('url')) score += 1;
+  if (tags.containsKey('image') || tags.containsKey('wikimedia_commons')) score += 1;
+  if (tags.containsKey('opening_hours')) score += 1;
+  if (tags.length > 5) score += 1;
+  return score;
 }
 
 /// Przybliżona odległość punktu [p] od odcinka [a]→[b]

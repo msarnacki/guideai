@@ -9,10 +9,11 @@ Future<List<InterestPoint>> fetchInterestPoints(
   LatLng startPoint, {
   LatLng? endPoint,
   required List<InterestCategory> categories,
+  required double targetDistanceMeters,
 }) async {
   final query = endPoint != null
       ? _buildBboxQuery(startPoint, endPoint, categories)
-      : _buildRadiusQuery(startPoint, categories);
+      : _buildRadiusQuery(startPoint, categories, targetDistanceMeters);
 
   final encoded = Uri.encodeComponent(query);
   final url = 'https://overpass-api.de/api/interpreter?data=$encoded';
@@ -83,11 +84,12 @@ String _conditionLines(String area, List<InterestCategory> categories) {
   return lines.join('\n');
 }
 
-/// Okrąg 1 km wokół jednego punktu.
-String _buildRadiusQuery(LatLng point, List<InterestCategory> categories) {
+/// Okrąg wokół jednego punktu — radius = 30% docelowego dystansu, min. 500 m, max. 10 km.
+String _buildRadiusQuery(LatLng point, List<InterestCategory> categories, double targetDistanceMeters) {
+  final radius = (targetDistanceMeters * 0.3).clamp(500, 10000).toInt();
   final lat = point.latitude;
   final lon = point.longitude;
-  final conditions = _conditionLines('around:1000,$lat,$lon', categories);
+  final conditions = _conditionLines('around:$radius,$lat,$lon', categories);
   return '''
 [out:json][timeout:45];
 (

@@ -47,6 +47,7 @@ class _MapScreenState extends State<MapScreen> {
         widget.startPoint,
         endPoint: widget.endPoint,
         categories: widget.categories,
+        targetDistanceMeters: widget.targetDistanceMeters.toDouble(),
       );
 
       if (widget.endPoint != null) {
@@ -61,7 +62,7 @@ class _MapScreenState extends State<MapScreen> {
         );
 
         setState(() {
-          _places = result.selectedPlaces;
+          _places = result.allPlacesOrdered;
           _route  = result.route;
           _loading = false;
           _status =
