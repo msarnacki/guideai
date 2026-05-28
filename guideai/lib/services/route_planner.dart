@@ -1,6 +1,6 @@
 import 'dart:math';
 import 'package:latlong2/latlong.dart';
-import '../models/war_place.dart';
+import '../models/interest_point.dart';
 import '../models/planner_result.dart';
 import 'routing_service.dart';
 
@@ -26,7 +26,7 @@ const double _minPlaceDistMeters = 80.0;
 Future<PlannerResult> planRoute({
   required LatLng start,
   required LatLng end,
-  required List<WarPlace> candidates,
+  required List<InterestPoint> candidates,
   required double targetMeters,
 }) async {
   // 1. Deduplikacja
@@ -42,7 +42,7 @@ Future<PlannerResult> planRoute({
 
   // 3. Greedy Best Insertion
   final waypoints = <LatLng>[start, end];
-  final selected = <WarPlace>[];
+  final selected = <InterestPoint>[];
   final upperBound = targetMeters * 1.1; // tolerancja +10%
 
   for (final place in sorted) {
@@ -106,8 +106,8 @@ double _estimateDistance(List<LatLng> waypoints) {
 }
 
 /// Usuwa miejsca bliższe niż [_minPlaceDistMeters] od już dodanych (skupiska).
-List<WarPlace> _deduplicate(List<WarPlace> places) {
-  final result = <WarPlace>[];
+List<InterestPoint> _deduplicate(List<InterestPoint> places) {
+  final result = <InterestPoint>[];
   for (final place in places) {
     final tooClose = result.any(
       (p) => _haversine(p.position, place.position) < _minPlaceDistMeters,

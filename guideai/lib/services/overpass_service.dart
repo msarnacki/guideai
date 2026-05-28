@@ -2,15 +2,15 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
-import '../models/war_place.dart';
+import '../models/interest_point.dart';
 
-/// Pobiera do 100 miejsc historycznych (memoriały) w obszarze wyznaczonym
+/// Pobiera do 100 punktów zainteresowania w obszarze wyznaczonym
 /// przez [startPoint] i opcjonalny [endPoint].
 ///
 /// Gdy podany jest tylko [startPoint], stosuje okrąg o promieniu 1 km.
 /// Gdy podane są oba punkty, używa bounding boxa okalającego obydwa punkty
 /// z 15% paddingiem po każdej stronie.
-Future<List<WarPlace>> fetchWarPlaces(
+Future<List<InterestPoint>> fetchInterestPoints(
   LatLng startPoint, {
   LatLng? endPoint,
 }) async {
@@ -33,7 +33,7 @@ Future<List<WarPlace>> fetchWarPlaces(
   final data = json.decode(response.body);
   final elements = data['elements'] as List;
 
-  final places = <WarPlace>[];
+  final places = <InterestPoint>[];
   for (final el in elements) {
     double? elLat, elLon;
     if (el['type'] == 'node') {
@@ -46,7 +46,7 @@ Future<List<WarPlace>> fetchWarPlaces(
     if (elLat == null || elLon == null) continue;
 
     final name = el['tags']?['name'] ?? el['tags']?['historic'] ?? 'Brak nazwy';
-    places.add(WarPlace(position: LatLng(elLat, elLon), name: name));
+    places.add(InterestPoint(position: LatLng(elLat, elLon), name: name));
   }
 
   return places;

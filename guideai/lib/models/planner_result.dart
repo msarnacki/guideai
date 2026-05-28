@@ -1,8 +1,8 @@
-import 'war_place.dart';
+import 'interest_point.dart';
 import 'route_result.dart';
 
 class PlannerResult {
-  final List<WarPlace> selectedPlaces;
+  final List<InterestPoint> selectedPlaces;
   final RouteResult route;
 
   const PlannerResult({

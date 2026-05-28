@@ -3,7 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../models/planner_result.dart';
 import '../models/route_result.dart';
-import '../models/war_place.dart';
+import '../models/interest_point.dart';
 import '../services/overpass_service.dart';
 import '../services/route_planner.dart';
 import '../services/routing_service.dart';
@@ -25,7 +25,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  List<WarPlace> _places = [];
+  List<InterestPoint> _places = [];
   RouteResult? _route;
   bool _loading = true;
   String _loadingMessage = 'Szukam ciekawych miejsc...';
@@ -40,7 +40,7 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _loadAll() async {
     try {
       // Krok 1: pobierz kandydatów z Overpass
-      final candidates = await fetchWarPlaces(
+      final candidates = await fetchInterestPoints(
         widget.startPoint,
         endPoint: widget.endPoint,
       );
@@ -294,7 +294,7 @@ class _MapScreenState extends State<MapScreen> {
                     if (widget.endPoint != null)
                       _legendItem(Icons.place, Colors.blue, 'Koniec'),
                     _legendItem(
-                        Icons.location_on, Colors.red, 'Miejsce historyczne'),
+                        Icons.location_on, Colors.red, 'Punkt zainteresowania'),
                   ],
                 ),
               ),

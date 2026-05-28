@@ -1,0 +1,6 @@
+Opisanych zostanie parę aspektów:
+1. Początkowy wybór punktów zainteresowania - na podstawie filtrów z ekranu startowego
+2. Wybranie najciekawszych X punktów na trasie - np. po obfitości opisów danego node'a, ale również może po bliskości do wielu innych node'ów
+3. Zaplanowanie trasy o dystansie przybliżonym do tego z filtrów po jak największej liczbie najciekawszych punktów - jeśli za mały dystans to dodaję kolejne pod względem ciekawości
+4. Jeśli są dłuższe przerwy pomiędzy punktami na trasie to sprawdzenie czy są w nich jakieś inne (nietematyczne) ciekawe punkty, o których można opowiedzieć dodatkowo
+5. 
