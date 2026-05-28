@@ -1,23 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import '../models/interest_category.dart';
+import '../models/interest_point.dart';
 import '../models/planner_result.dart';
 import '../models/route_result.dart';
-import '../models/interest_point.dart';
 import '../services/overpass_service.dart';
 import '../services/route_planner.dart';
-import '../services/routing_service.dart';
+import 'place_details_sheet.dart';
+import 'route_list_sheet.dart';
 
 class MapScreen extends StatefulWidget {
   final LatLng startPoint;
   final LatLng? endPoint;
   final double targetDistanceMeters;
+  final List<InterestCategory> categories;
 
   const MapScreen({
     super.key,
     required this.startPoint,
     this.endPoint,
     this.targetDistanceMeters = 5000,
+    required this.categories,
   });
 
   @override
@@ -39,14 +43,13 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _loadAll() async {
     try {
-      // Krok 1: pobierz kandydatów z Overpass
       final candidates = await fetchInterestPoints(
         widget.startPoint,
         endPoint: widget.endPoint,
+        categories: widget.categories,
       );
 
       if (widget.endPoint != null) {
-        // Krok 2: planuj trasę przez wybrane miejsca
         setState(() => _loadingMessage =
             'Planuję trasę przez ${candidates.length} kandydatów...');
 
@@ -59,40 +62,67 @@ class _MapScreenState extends State<MapScreen> {
 
         setState(() {
           _places = result.selectedPlaces;
-          _route = result.route;
+          _route  = result.route;
           _loading = false;
           _status =
               '${_places.length} miejsc · ${_route!.distanceLabel} · ${_route!.durationLabel}';
         });
       } else {
-        // Tylko start — pokaż wszystkie miejsca bez trasy
         setState(() {
-          _places = candidates;
-          _route = null;
+          _places  = candidates;
+          _route   = null;
           _loading = false;
-          _status = 'Znaleziono ${candidates.length} miejsc';
+          _status  = 'Znaleziono ${candidates.length} miejsc';
         });
       }
     } catch (e) {
       setState(() {
         _loading = false;
-        _status = 'Błąd: $e';
+        _status  = 'Błąd: $e';
       });
     }
   }
 
-  void _showPlaceDialog(String name) {
-    showDialog(
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  InterestCategory? _categoryFor(InterestPoint place) {
+    try {
+      return widget.categories.firstWhere((c) => c.id == place.categoryId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Color _colorFor(InterestPoint place) =>
+      _categoryFor(place)?.color ?? Colors.red;
+
+  void _showDetails(InterestPoint place) {
+    showModalBottomSheet(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Miejsce'),
-        content: Text(name),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
-          ),
-        ],
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => PlaceDetailsSheet(
+        place: place,
+        category: _categoryFor(place),
+      ),
+    );
+  }
+
+  void _showRouteList() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => RouteListSheet(
+        places: _places,
+        categories: widget.categories,
+        isOrdered: widget.endPoint != null,
       ),
     );
   }
@@ -100,17 +130,19 @@ class _MapScreenState extends State<MapScreen> {
   // ── Markery ───────────────────────────────────────────────────────────────
 
   List<Marker> get _placeMarkers => _places
-      .map(
-        (place) => Marker(
-          point: place.position,
-          width: 40,
-          height: 40,
-          child: GestureDetector(
-            onTap: () => _showPlaceDialog(place.name),
-            child: const Icon(Icons.location_on, color: Colors.red, size: 36),
-          ),
-        ),
-      )
+      .map((place) => Marker(
+            point: place.position,
+            width: 40,
+            height: 40,
+            child: GestureDetector(
+              onTap: () => _showDetails(place),
+              child: Icon(
+                Icons.location_on,
+                color: _colorFor(place),
+                size: 36,
+              ),
+            ),
+          ))
       .toList();
 
   Marker get _startMarker => Marker(
@@ -151,20 +183,6 @@ class _MapScreenState extends State<MapScreen> {
 
   // ── Widgety pomocnicze ────────────────────────────────────────────────────
 
-  Widget _legendItem(IconData icon, Color color, String label) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: 18),
-          const SizedBox(width: 6),
-          Text(label, style: const TextStyle(fontSize: 12)),
-        ],
-      ),
-    );
-  }
-
   Widget _routeInfoItem(IconData icon, String value, String label) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -175,17 +193,59 @@ class _MapScreenState extends State<MapScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              value,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            Text(
-              label,
-              style: const TextStyle(fontSize: 11, color: Colors.grey),
-            ),
+            Text(value,
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: 15)),
+            Text(label,
+                style: const TextStyle(fontSize: 11, color: Colors.grey)),
           ],
         ),
       ],
+    );
+  }
+
+  Widget _buildLegend() {
+    return Material(
+      borderRadius: BorderRadius.circular(8),
+      color: Colors.white.withOpacity(0.93),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _legendItem(Icons.place, Colors.green, 'Start'),
+            if (widget.endPoint != null)
+              _legendItem(Icons.place, Colors.blue, 'Koniec'),
+            const Divider(height: 10, thickness: 0.5),
+            ...widget.categories.map(
+              (cat) => _legendItem(cat.icon, cat.color, cat.label),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _legendItem(IconData icon, Color color, String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 140),
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 11),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -213,6 +273,13 @@ class _MapScreenState extends State<MapScreen> {
 
     return Scaffold(
       appBar: AppBar(title: Text(_status)),
+      floatingActionButton: _places.isNotEmpty
+          ? FloatingActionButton.extended(
+              onPressed: _showRouteList,
+              icon: const Icon(Icons.format_list_numbered),
+              label: const Text('Lista miejsc'),
+            )
+          : null,
       body: Stack(
         children: [
           FlutterMap(
@@ -222,11 +289,10 @@ class _MapScreenState extends State<MapScreen> {
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                urlTemplate:
+                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.guideai',
               ),
-
-              // Trasa (pod markerami)
               if (_route != null)
                 PolylineLayer(
                   polylines: [
@@ -237,7 +303,6 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ],
                 ),
-
               MarkerLayer(markers: [
                 ..._placeMarkers,
                 _startMarker,
@@ -257,13 +322,13 @@ class _MapScreenState extends State<MapScreen> {
                 color: Colors.white.withOpacity(0.93),
                 elevation: 2,
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      _routeInfoItem(
-                          Icons.straighten, _route!.distanceLabel, 'dystans'),
+                      _routeInfoItem(Icons.straighten,
+                          _route!.distanceLabel, 'dystans'),
                       const VerticalDivider(width: 24, thickness: 1),
                       _routeInfoItem(Icons.directions_walk,
                           _route!.durationLabel, 'szac. czas'),
@@ -278,27 +343,9 @@ class _MapScreenState extends State<MapScreen> {
 
           // Legenda
           Positioned(
-            bottom: 16,
+            bottom: 80, // powyżej FAB
             left: 16,
-            child: Material(
-              borderRadius: BorderRadius.circular(8),
-              color: Colors.white.withOpacity(0.9),
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _legendItem(Icons.place, Colors.green, 'Start'),
-                    if (widget.endPoint != null)
-                      _legendItem(Icons.place, Colors.blue, 'Koniec'),
-                    _legendItem(
-                        Icons.location_on, Colors.red, 'Punkt zainteresowania'),
-                  ],
-                ),
-              ),
-            ),
+            child: _buildLegend(),
           ),
         ],
       ),

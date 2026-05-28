@@ -74,7 +74,19 @@ Future<PlannerResult> planRoute({
   // 4. Zapytanie do OSRM z finalną listą waypointów → realny dystans
   final route = await fetchRouteMulti(waypoints);
 
-  return PlannerResult(selectedPlaces: selected, route: route);
+  // Przywróć kolejność miejsc zgodną z kolejnością waypointów na trasie.
+  final orderedSelected = <InterestPoint>[];
+  for (int i = 1; i < waypoints.length - 1; i++) {
+    final wp = waypoints[i];
+    final match = selected.firstWhere(
+      (p) => p.position.latitude == wp.latitude &&
+             p.position.longitude == wp.longitude,
+      orElse: () => selected.first,
+    );
+    orderedSelected.add(match);
+  }
+
+  return PlannerResult(selectedPlaces: orderedSelected, route: route);
 }
 
 // ── Funkcje pomocnicze ─────────────────────────────────────────────────────────

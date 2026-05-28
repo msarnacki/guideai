@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart';
+import '../models/interest_category.dart';
 import 'pick_location_screen.dart';
 import 'map_screen.dart';
 
@@ -22,8 +23,13 @@ class _FiltersScreenState extends State<FiltersScreen> {
   bool _loadingEndLocation = false;
   String? _endLabel;
 
-  // Dystans (placeholder)
+  // Dystans
   double _distanceKm = 5.0;
+
+  // Wybrane kategorie (max 3)
+  final Set<String> _selectedCategories = {};
+
+  static const int _maxCategories = 3;
 
   // ── GPS: pobierz aktualną lokalizację ──────────────────────────────────────
   Future<LatLng?> _getGpsLocation() async {
@@ -134,6 +140,16 @@ class _FiltersScreenState extends State<FiltersScreen> {
       );
       return;
     }
+    if (_selectedCategories.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Wybierz co najmniej jedną kategorię')),
+      );
+      return;
+    }
+
+    final categories = kInterestCategories
+        .where((c) => _selectedCategories.contains(c.id))
+        .toList();
 
     Navigator.push(
       context,
@@ -142,6 +158,7 @@ class _FiltersScreenState extends State<FiltersScreen> {
           startPoint: _startPoint!,
           endPoint: _endPoint,
           targetDistanceMeters: _distanceKm * 1000,
+          categories: categories,
         ),
       ),
     );
@@ -203,90 +220,166 @@ class _FiltersScreenState extends State<FiltersScreen> {
     );
   }
 
+  Widget _categoriesSection() {
+    final atLimit = _selectedCategories.length >= _maxCategories;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('Co cię interesuje?'),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            const Text(
+              'Wybierz do $_maxCategories kategorii',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(width: 8),
+            if (_selectedCategories.isNotEmpty)
+              Text(
+                '(wybrano: ${_selectedCategories.length}/$_maxCategories)',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: atLimit ? Colors.orange : Colors.grey,
+                  fontWeight: atLimit ? FontWeight.bold : FontWeight.normal,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: kInterestCategories.map((cat) {
+            final isSelected = _selectedCategories.contains(cat.id);
+            final isDisabled = !isSelected && atLimit;
+            return FilterChip(
+              avatar: Icon(
+                cat.icon,
+                size: 16,
+                color: isDisabled ? Colors.grey : null,
+              ),
+              label: Text(cat.label),
+              selected: isSelected,
+              onSelected: isDisabled
+                  ? null
+                  : (selected) {
+                      setState(() {
+                        if (selected) {
+                          _selectedCategories.add(cat.id);
+                        } else {
+                          _selectedCategories.remove(cat.id);
+                        }
+                      });
+                    },
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  bool get _canGenerate =>
+      _startPoint != null && _selectedCategories.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Guided Walk')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── Punkt startowy ──────────────────────────────────────────────
-            _sectionTitle('Punkt startowy'),
-            const SizedBox(height: 12),
-            _locationButtons(
-              loading: _loadingStartLocation,
-              onGps: _useMyLocationAsStart,
-              onMap: _pickStartFromMap,
-            ),
-            if (_startLabel != null) _selectedPointInfo(_startLabel!),
-
-            const SizedBox(height: 28),
-
-            // ── Punkt końcowy ───────────────────────────────────────────────
-            _sectionTitle('Punkt końcowy'),
-            const SizedBox(height: 4),
-            const Text(
-              'Opcjonalny — wymagany do planowania trasy przez miejsca',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-            const SizedBox(height: 12),
-            _locationButtons(
-              loading: _loadingEndLocation,
-              onGps: _useMyLocationAsEnd,
-              onMap: _pickEndFromMap,
-            ),
-            if (_endLabel != null) _selectedPointInfo(_endLabel!),
-
-            const SizedBox(height: 28),
-
-            // ── Dystans ─────────────────────────────────────────────────────
-            _sectionTitle('Dystans spaceru'),
-            const SizedBox(height: 4),
-            const Text(
-              'Używany gdy wybrano punkt startowy i końcowy',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const Text('1 km', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                Expanded(
-                  child: Slider(
-                    value: _distanceKm,
-                    min: 1,
-                    max: 20,
-                    divisions: 19,
-                    label: '${_distanceKm.round()} km',
-                    onChanged: (v) => setState(() => _distanceKm = v),
+      body: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ── Punkt startowy ────────────────────────────────────────
+                  _sectionTitle('Punkt startowy'),
+                  const SizedBox(height: 12),
+                  _locationButtons(
+                    loading: _loadingStartLocation,
+                    onGps: _useMyLocationAsStart,
+                    onMap: _pickStartFromMap,
                   ),
-                ),
-                const Text('20 km', style: TextStyle(fontSize: 12, color: Colors.grey)),
-              ],
-            ),
-            Center(
-              child: Text(
-                '${_distanceKm.round()} km',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  if (_startLabel != null) _selectedPointInfo(_startLabel!),
+
+                  const SizedBox(height: 28),
+
+                  // ── Punkt końcowy ─────────────────────────────────────────
+                  _sectionTitle('Punkt końcowy'),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Opcjonalny — wymagany do planowania trasy przez miejsca',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 12),
+                  _locationButtons(
+                    loading: _loadingEndLocation,
+                    onGps: _useMyLocationAsEnd,
+                    onMap: _pickEndFromMap,
+                  ),
+                  if (_endLabel != null) _selectedPointInfo(_endLabel!),
+
+                  const SizedBox(height: 28),
+
+                  // ── Kategorie ─────────────────────────────────────────────
+                  _categoriesSection(),
+
+                  const SizedBox(height: 28),
+
+                  // ── Dystans ───────────────────────────────────────────────
+                  _sectionTitle('Dystans spaceru'),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Używany gdy wybrano punkt startowy i końcowy',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Text('1 km', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Expanded(
+                        child: Slider(
+                          value: _distanceKm,
+                          min: 1,
+                          max: 20,
+                          divisions: 19,
+                          label: '${_distanceKm.round()} km',
+                          onChanged: (v) => setState(() => _distanceKm = v),
+                        ),
+                      ),
+                      const Text('20 km', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    ],
+                  ),
+                  Center(
+                    child: Text(
+                      '${_distanceKm.round()} km',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                  ),
+
+                  const SizedBox(height: 24),
+                ],
               ),
             ),
+          ),
 
-            const Spacer(),
-
-            // ── Przycisk Generuj ────────────────────────────────────────────
-            SizedBox(
+          // ── Przycisk Generuj (zawsze widoczny na dole) ────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+            child: SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _startPoint != null ? _onGenerate : null,
+                onPressed: _canGenerate ? _onGenerate : null,
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
                 child: const Text('Generuj trasę', style: TextStyle(fontSize: 16)),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

@@ -3,20 +3,16 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import '../models/interest_point.dart';
+import '../models/interest_category.dart';
 
-/// Pobiera do 100 punktów zainteresowania w obszarze wyznaczonym
-/// przez [startPoint] i opcjonalny [endPoint].
-///
-/// Gdy podany jest tylko [startPoint], stosuje okrąg o promieniu 1 km.
-/// Gdy podane są oba punkty, używa bounding boxa okalającego obydwa punkty
-/// z 15% paddingiem po każdej stronie.
 Future<List<InterestPoint>> fetchInterestPoints(
   LatLng startPoint, {
   LatLng? endPoint,
+  required List<InterestCategory> categories,
 }) async {
   final query = endPoint != null
-      ? _buildBboxQuery(startPoint, endPoint)
-      : _buildRadiusQuery(startPoint);
+      ? _buildBboxQuery(startPoint, endPoint, categories)
+      : _buildRadiusQuery(startPoint, categories);
 
   final encoded = Uri.encodeComponent(query);
   final url = 'https://overpass-api.de/api/interpreter?data=$encoded';
@@ -45,34 +41,69 @@ Future<List<InterestPoint>> fetchInterestPoints(
     }
     if (elLat == null || elLon == null) continue;
 
-    final name = el['tags']?['name'] ?? el['tags']?['historic'] ?? 'Brak nazwy';
-    places.add(InterestPoint(position: LatLng(elLat, elLon), name: name));
+    final tags = Map<String, dynamic>.from(el['tags'] as Map? ?? {});
+    final categoryId = _detectCategoryId(tags, categories);
+    final name = tags['name'] ??
+        tags['historic'] ??
+        tags['tourism'] ??
+        tags['amenity'] ??
+        'Brak nazwy';
+
+    places.add(InterestPoint(
+      position: LatLng(elLat, elLon),
+      name: name,
+      categoryId: categoryId,
+      tags: tags,
+    ));
   }
 
   return places;
 }
 
+String _detectCategoryId(
+  Map<String, dynamic> tags,
+  List<InterestCategory> categories,
+) {
+  for (final cat in categories) {
+    if (cat.matchesTags(tags)) return cat.id;
+  }
+  return categories.first.id;
+}
+
 // ── Budowanie zapytań ─────────────────────────────────────────────────────────
 
+String _conditionLines(String area, List<InterestCategory> categories) {
+  final lines = <String>[];
+  for (final cat in categories) {
+    for (final cond in cat.overpassConditions) {
+      lines.add('  node[$cond]($area);');
+      lines.add('  way[$cond]($area);');
+    }
+  }
+  return lines.join('\n');
+}
+
 /// Okrąg 1 km wokół jednego punktu.
-String _buildRadiusQuery(LatLng point) {
+String _buildRadiusQuery(LatLng point, List<InterestCategory> categories) {
   final lat = point.latitude;
   final lon = point.longitude;
+  final conditions = _conditionLines('around:1000,$lat,$lon', categories);
   return '''
-[out:json][timeout:30];
+[out:json][timeout:45];
 (
-  node["historic"="memorial"](around:1000,$lat,$lon);
-  way["historic"="memorial"](around:1000,$lat,$lon);
+$conditions
 );
 out center 100;
 ''';
 }
 
 /// Bounding box okalający oba punkty + 15% paddingu z każdej strony.
-/// Minimalne rozszerzenie: ~500 m (~0.005°), żeby obszar nie był za mały
-/// gdy punkty są blisko siebie.
-String _buildBboxQuery(LatLng start, LatLng end) {
-  const padding = 0.15; // 15%
+String _buildBboxQuery(
+  LatLng start,
+  LatLng end,
+  List<InterestCategory> categories,
+) {
+  const padding = 0.15;
   const minPad = 0.005; // ~500 m
 
   final minLat = min(start.latitude, end.latitude);
@@ -88,9 +119,12 @@ String _buildBboxQuery(LatLng start, LatLng end) {
   final west  = minLon - lonPad;
   final east  = maxLon + lonPad;
 
+  final conditions = _conditionLines('$south,$west,$north,$east', categories);
   return '''
-[out:json][timeout:30];
-node["historic"="memorial"]($south,$west,$north,$east);
-out 100;
+[out:json][timeout:45];
+(
+$conditions
+);
+out center 100;
 ''';
 }
