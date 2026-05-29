@@ -162,6 +162,12 @@ List<InterestPoint> findGapFillers({
 }) {
   if (routePolyline.length < 2 || broadCandidates.isEmpty) return [];
 
+  // Minimalny próg jakości — odrzuca anonimowe/puste punkty
+  final qualifiedCandidates = broadCandidates
+      .where((p) => _richnessScore(p.tags) >= 1)
+      .toList();
+  if (qualifiedCandidates.isEmpty) return [];
+
   final mainWaypoints = [
     start,
     ...selectedPlaces.map((p) => p.position),
@@ -198,7 +204,7 @@ List<InterestPoint> findGapFillers({
     final gapPoly = routePolyline.sublist(fromSeg, min(toSeg + 2, routePolyline.length));
     if (gapPoly.length < 2) continue;
 
-    final gapCandidates = broadCandidates.where((p) {
+    final gapCandidates = qualifiedCandidates.where((p) {
       if (addedPositions.contains(p.position)) return false;
       if (existingPositions.any((pos) => _haversine(p.position, pos) < _gapExclusionRadius)) {
         return false;

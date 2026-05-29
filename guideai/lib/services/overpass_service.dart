@@ -43,12 +43,10 @@ Future<List<InterestPoint>> fetchInterestPoints(
     if (elLat == null || elLon == null) continue;
 
     final tags = Map<String, dynamic>.from(el['tags'] as Map? ?? {});
+    final name = tags['name'] as String?;
+    if (name == null || name.trim().isEmpty) continue;
+
     final categoryId = _detectCategoryId(tags, categories);
-    final name = tags['name'] ??
-        tags['historic'] ??
-        tags['tourism'] ??
-        tags['amenity'] ??
-        'Brak nazwy';
 
     places.add(InterestPoint(
       position: LatLng(elLat, elLon),
@@ -77,8 +75,8 @@ String _conditionLines(String area, List<InterestCategory> categories) {
   final lines = <String>[];
   for (final cat in categories) {
     for (final cond in cat.overpassConditions) {
-      lines.add('  node[$cond]($area);');
-      lines.add('  way[$cond]($area);');
+      lines.add('  node["name"][$cond]($area);');
+      lines.add('  way["name"][$cond]($area);');
     }
   }
   return lines.join('\n');
@@ -139,13 +137,10 @@ Future<List<InterestPoint>> fetchBroadInterestPoints(
     if (elLat == null || elLon == null) continue;
 
     final tags = Map<String, dynamic>.from(el['tags'] as Map? ?? {});
+    final name = tags['name'] as String?;
+    if (name == null || name.trim().isEmpty) continue;
+
     final categoryId = _detectCategoryId(tags, remaining);
-    final name = tags['name'] ??
-        tags['historic'] ??
-        tags['tourism'] ??
-        tags['amenity'] ??
-        tags['leisure'] ??
-        'Brak nazwy';
 
     places.add(InterestPoint(
       position: LatLng(elLat, elLon),
