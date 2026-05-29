@@ -1,12 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:location/location.dart';
+
 import '../models/interest_category.dart';
 import '../models/interest_point.dart';
 import '../models/planner_result.dart';
 import '../models/route_result.dart';
+import '../services/navigation_service.dart';
 import '../services/overpass_service.dart';
 import '../services/route_planner.dart';
+import 'navigation_popup.dart';
 import 'place_details_sheet.dart';
 import 'route_list_sheet.dart';
 
@@ -28,7 +35,8 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen>
+    with SingleTickerProviderStateMixin {
   List<InterestPoint> _places = [];
   RouteResult? _route;
   bool _loading = true;
@@ -36,11 +44,119 @@ class _MapScreenState extends State<MapScreen> {
   String _status = '';
   bool _legendVisible = true;
 
+  // ── Map controller ────────────────────────────────────────────────────────
+  final _mapController = MapController();
+  bool _mapReady = false;
+
+  // ── Map-rotation animation ────────────────────────────────────────────────
+  late final AnimationController _rotAnimCtrl;
+  late final CurvedAnimation _rotCurve;
+  double _fromMapRot = 0;
+  double _toMapRot = 0;
+
+  // ── Ambient location (without navigation) ─────────────────────────────────
+  LatLng? _ambientPosition;
+  StreamSubscription<LocationData>? _ambientSub;
+
+  // ── Navigation state ──────────────────────────────────────────────────────
+  bool _navMode = false;
+  NavigationService? _navService;
+  StreamSubscription<NavigationUpdate>? _navUpdateSub;
+  StreamSubscription<ProximityEvent>? _navProximitySub;
+  LatLng? _userPosition;
+  double _userBearing = 0;
+  bool _isOffRoute = false;
+  bool _headingUp = true;
+
+  // true = user panned/zoomed manually, auto-follow paused
+  bool _freeCam = false;
+
+  static const _navZoom = 17.0;
+
+  // Popup queue
+  InterestPoint? _currentPopup;
+  final List<InterestPoint> _popupQueue = [];
+  Timer? _popupTimer;
+
   @override
   void initState() {
     super.initState();
+    _rotAnimCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    )..addListener(_onRotTick);
+    _rotCurve =
+        CurvedAnimation(parent: _rotAnimCtrl, curve: Curves.easeOut);
     _loadAll();
   }
+
+  @override
+  void dispose() {
+    _navUpdateSub?.cancel();
+    _navProximitySub?.cancel();
+    _navService?.dispose();
+    _ambientSub?.cancel();
+    _popupTimer?.cancel();
+    _rotCurve.dispose();
+    _rotAnimCtrl.dispose();
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    super.dispose();
+  }
+
+  // ── Ambient location ──────────────────────────────────────────────────────
+
+  Future<void> _startAmbientLocation() async {
+    if (_ambientSub != null) return;
+    final loc = Location();
+
+    bool svc = await loc.serviceEnabled();
+    if (!svc) svc = await loc.requestService();
+    if (!svc) return;
+
+    PermissionStatus perm = await loc.hasPermission();
+    if (perm == PermissionStatus.denied) {
+      perm = await loc.requestPermission();
+      if (perm != PermissionStatus.granted) return;
+    }
+
+    await loc.changeSettings(
+      accuracy: LocationAccuracy.high,
+      interval: 5000,
+      distanceFilter: 10,
+    );
+
+    _ambientSub = loc.onLocationChanged.listen((data) {
+      if (!mounted || data.latitude == null || data.longitude == null) return;
+      setState(() {
+        _ambientPosition = LatLng(data.latitude!, data.longitude!);
+      });
+    });
+  }
+
+  void _stopAmbientLocation() {
+    _ambientSub?.cancel();
+    _ambientSub = null;
+  }
+
+  // ── Rotation animation ────────────────────────────────────────────────────
+
+  void _onRotTick() {
+    if (!mounted || !_mapReady) return;
+    final rot =
+        _fromMapRot + (_toMapRot - _fromMapRot) * _rotCurve.value;
+    _mapController.rotate(rot);
+  }
+
+  void _animateMapRotation(double targetDeg) {
+    if (!_mapReady) return;
+    final from = _mapController.camera.rotation;
+    final diff = ((targetDeg - from) % 360 + 540) % 360 - 180;
+    _fromMapRot = from;
+    _toMapRot = from + diff;
+    _rotAnimCtrl.forward(from: 0);
+  }
+
+  // ── Route loading ─────────────────────────────────────────────────────────
 
   Future<void> _loadAll() async {
     try {
@@ -79,9 +195,7 @@ class _MapScreenState extends State<MapScreen> {
             routePolyline: result.route.points,
             broadCandidates: broadCandidates,
           );
-        } catch (_) {
-          // punkty poboczne są opcjonalne
-        }
+        } catch (_) {}
 
         final allPlaces = sortPointsByRoute(
           [...result.allPlacesOrdered, ...gapFillers],
@@ -95,7 +209,8 @@ class _MapScreenState extends State<MapScreen> {
           _places = allPlaces;
           _route = result.route;
           _loading = false;
-          _status = '$mainCount miejsc · ${_route!.distanceLabel} · ${_route!.durationLabel}'
+          _status =
+              '$mainCount miejsc · ${_route!.distanceLabel} · ${_route!.durationLabel}'
               '${sideCount > 0 ? ' · +$sideCount pobocznych' : ''}';
         });
       } else {
@@ -111,6 +226,127 @@ class _MapScreenState extends State<MapScreen> {
         _loading = false;
         _status = 'Błąd: $e';
       });
+    }
+  }
+
+  // ── Navigation ────────────────────────────────────────────────────────────
+
+  Future<void> _startNavigation() async {
+    if (_route == null) return;
+
+    // Navigation service takes over location; stop ambient tracking.
+    _stopAmbientLocation();
+
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+
+    final service = NavigationService(
+      polyline: _route!.points,
+      orderedPoints: _places,
+    );
+
+    final ok = await service.start();
+    if (!ok) {
+      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      _startAmbientLocation(); // restore ambient on failure
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text('Nie można uruchomić nawigacji – brak dostępu do GPS'),
+        ));
+      }
+      service.dispose();
+      return;
+    }
+
+    _navUpdateSub = service.updates.listen(_handleNavUpdate);
+    _navProximitySub = service.proximityEvents.listen(_handleProximity);
+
+    setState(() {
+      _navService = service;
+      _navMode = true;
+      _headingUp = true;
+      _freeCam = false;
+    });
+  }
+
+  void _stopNavigation() {
+    _navUpdateSub?.cancel();
+    _navProximitySub?.cancel();
+    _navService?.dispose();
+    _popupTimer?.cancel();
+    _navUpdateSub = null;
+    _navProximitySub = null;
+    _navService = null;
+
+    _rotAnimCtrl.stop();
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    _animateMapRotation(0);
+
+    setState(() {
+      _navMode = false;
+      _freeCam = false;
+      _userPosition = null;
+      _isOffRoute = false;
+      _currentPopup = null;
+      _popupQueue.clear();
+    });
+
+    _startAmbientLocation(); // resume showing position dot
+  }
+
+  void _handleNavUpdate(NavigationUpdate update) {
+    if (!mounted) return;
+    setState(() {
+      _userPosition = update.snappedPosition;
+      _userBearing = update.bearing;
+      _isOffRoute = update.isOffRoute;
+    });
+    if (!_mapReady || _freeCam) return;
+    _mapController.move(update.snappedPosition, _mapController.camera.zoom);
+    if (_headingUp) _animateMapRotation(-update.bearing);
+  }
+
+  void _recenter() {
+    if (!_mapReady) return;
+    setState(() => _freeCam = false);
+    if (_userPosition != null) {
+      _mapController.move(_userPosition!, _navZoom);
+      if (_headingUp) _animateMapRotation(-_userBearing);
+    }
+  }
+
+  void _handleProximity(ProximityEvent event) {
+    if (!mounted) return;
+    if (_currentPopup == null) {
+      _showPopup(event.point);
+    } else {
+      setState(() => _popupQueue.add(event.point));
+    }
+  }
+
+  void _showPopup(InterestPoint place) {
+    _popupTimer?.cancel();
+    setState(() => _currentPopup = place);
+    _popupTimer = Timer(const Duration(minutes: 2), _dismissPopup);
+  }
+
+  void _dismissPopup() {
+    _popupTimer?.cancel();
+    setState(() {
+      _currentPopup =
+          _popupQueue.isNotEmpty ? _popupQueue.removeAt(0) : null;
+    });
+    if (_currentPopup != null) {
+      _popupTimer = Timer(const Duration(minutes: 2), _dismissPopup);
+    }
+  }
+
+  void _toggleHeadingMode() {
+    setState(() => _headingUp = !_headingUp);
+    if (!_headingUp) {
+      _animateMapRotation(0);
+    } else if (!_freeCam && _userPosition != null) {
+      _animateMapRotation(-_userBearing);
     }
   }
 
@@ -135,10 +371,8 @@ class _MapScreenState extends State<MapScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (_) => PlaceDetailsSheet(
-        place: place,
-        category: _categoryFor(place),
-      ),
+      builder: (_) =>
+          PlaceDetailsSheet(place: place, category: _categoryFor(place)),
     );
   }
 
@@ -158,7 +392,7 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  // ── Markery ───────────────────────────────────────────────────────────────
+  // ── Markers ───────────────────────────────────────────────────────────────
 
   List<Marker> get _placeMarkers => _places.map((place) {
         if (place.isSidePoint) {
@@ -168,11 +402,8 @@ class _MapScreenState extends State<MapScreen> {
             height: 28,
             child: GestureDetector(
               onTap: () => _showDetails(place),
-              child: Icon(
-                Icons.location_on,
-                color: Colors.grey[500],
-                size: 22,
-              ),
+              child:
+                  Icon(Icons.location_on, color: Colors.grey[500], size: 22),
             ),
           );
         }
@@ -182,11 +413,7 @@ class _MapScreenState extends State<MapScreen> {
           height: 40,
           child: GestureDetector(
             onTap: () => _showDetails(place),
-            child: Icon(
-              Icons.location_on,
-              color: _colorFor(place),
-              size: 36,
-            ),
+            child: Icon(Icons.location_on, color: _colorFor(place), size: 36),
           ),
         );
       }).toList();
@@ -195,12 +422,10 @@ class _MapScreenState extends State<MapScreen> {
         point: widget.startPoint,
         width: 44,
         height: 52,
-        child: const Column(
-          children: [
-            Icon(Icons.place, color: Colors.green, size: 40),
-            SizedBox(height: 2),
-          ],
-        ),
+        child: const Column(children: [
+          Icon(Icons.place, color: Colors.green, size: 40),
+          SizedBox(height: 2),
+        ]),
       );
 
   Marker? get _endMarker => widget.endPoint == null
@@ -209,15 +434,62 @@ class _MapScreenState extends State<MapScreen> {
           point: widget.endPoint!,
           width: 44,
           height: 52,
-          child: const Column(
-            children: [
-              Icon(Icons.place, color: Colors.blue, size: 40),
-              SizedBox(height: 2),
-            ],
-          ),
+          child: const Column(children: [
+            Icon(Icons.place, color: Colors.blue, size: 40),
+            SizedBox(height: 2),
+          ]),
         );
 
-  // ── Centrum widoku ────────────────────────────────────────────────────────
+  // Navigation: arrow rotated to bearing (compensates for map rotation).
+  // Ambient:    simple blue dot, no direction.
+  Marker? get _userMarker {
+    if (_navMode) {
+      if (_userPosition == null) return null;
+      return Marker(
+        point: _userPosition!,
+        width: 32,
+        height: 32,
+        child: AnimatedRotation(
+          turns: _userBearing / 360.0,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.blue,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: const [
+                BoxShadow(color: Colors.black26, blurRadius: 4),
+              ],
+            ),
+            padding: const EdgeInsets.all(4),
+            child:
+                const Icon(Icons.arrow_upward, color: Colors.white, size: 14),
+          ),
+        ),
+      );
+    }
+
+    // Ambient dot
+    if (_ambientPosition == null) return null;
+    return Marker(
+      point: _ambientPosition!,
+      width: 18,
+      height: 18,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.blue,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 2.5),
+          boxShadow: const [
+            BoxShadow(color: Colors.black26, blurRadius: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Map center ────────────────────────────────────────────────────────────
 
   LatLng get _mapCenter {
     if (widget.endPoint == null) return widget.startPoint;
@@ -227,50 +499,24 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  // ── Widgety pomocnicze ────────────────────────────────────────────────────
+  // ── Legend ────────────────────────────────────────────────────────────────
 
   bool get _hasSidePoints => _places.any((p) => p.isSidePoint);
-
-  Widget _routeInfoItem(IconData icon, String value, String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 20, color: Colors.blueAccent),
-        const SizedBox(width: 8),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(value,
-                style: const TextStyle(
-                    fontWeight: FontWeight.bold, fontSize: 15)),
-            Text(label,
-                style: const TextStyle(fontSize: 11, color: Colors.grey)),
-          ],
-        ),
-      ],
-    );
-  }
 
   Widget _legendItem(IconData icon, Color color, String label,
       {double iconSize = 16}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: iconSize),
-          const SizedBox(width: 6),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 140),
-            child: Text(
-              label,
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, color: color, size: iconSize),
+        const SizedBox(width: 6),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 140),
+          child: Text(label,
               style: const TextStyle(fontSize: 11),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
+              overflow: TextOverflow.ellipsis),
+        ),
+      ]),
     );
   }
 
@@ -286,32 +532,30 @@ class _MapScreenState extends State<MapScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Legenda',
-                    style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.grey,
-                        fontWeight: FontWeight.w500)),
-                const SizedBox(width: 24),
-                GestureDetector(
-                  onTap: () => setState(() => _legendVisible = false),
-                  child: Icon(Icons.close, size: 14, color: Colors.grey[500]),
-                ),
-              ],
-            ),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              const Text('Legenda',
+                  style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.grey,
+                      fontWeight: FontWeight.w500)),
+              const SizedBox(width: 24),
+              GestureDetector(
+                onTap: () => setState(() => _legendVisible = false),
+                child:
+                    Icon(Icons.close, size: 14, color: Colors.grey[500]),
+              ),
+            ]),
             const SizedBox(height: 4),
             _legendItem(Icons.place, Colors.green, 'Start'),
             if (widget.endPoint != null)
               _legendItem(Icons.place, Colors.blue, 'Koniec'),
             const Divider(height: 10, thickness: 0.5),
-            ...widget.categories.map(
-              (cat) => _legendItem(cat.icon, cat.color, cat.label),
-            ),
+            ...widget.categories
+                .map((cat) => _legendItem(cat.icon, cat.color, cat.label)),
             if (_hasSidePoints) ...[
               const Divider(height: 10, thickness: 0.5),
-              _legendItem(Icons.location_on, const Color(0xFF9E9E9E), 'Punkt poboczny',
+              _legendItem(Icons.location_on, const Color(0xFF9E9E9E),
+                  'Punkt poboczny',
                   iconSize: 13),
             ],
           ],
@@ -336,31 +580,109 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  // ── Info panel ────────────────────────────────────────────────────────────
+
+  Widget _routeInfoItem(IconData icon, String value, String label) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(icon, size: 20, color: Colors.blueAccent),
+      const SizedBox(width: 8),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(value,
+              style:
+                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          Text(label,
+              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        ],
+      ),
+    ]);
+  }
+
+  Widget _buildNavToggle() {
+    if (_navMode) {
+      return GestureDetector(
+        onTap: _stopNavigation,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.stop_circle_rounded, color: Colors.red[600], size: 28),
+          Text('stop',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+        ]),
+      );
+    }
+    return GestureDetector(
+      onTap: _startNavigation,
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.play_circle_rounded, color: Colors.green, size: 28),
+        Text('nawiguj',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+      ]),
+    );
+  }
+
+  Widget _buildInfoPanel() {
+    return Positioned(
+      top: 12,
+      left: 16,
+      right: 16,
+      child: Material(
+        borderRadius: BorderRadius.circular(8),
+        color: Colors.white.withOpacity(0.93),
+        elevation: 2,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _routeInfoItem(
+                  Icons.straighten, _route!.distanceLabel, 'dystans'),
+              const VerticalDivider(width: 24, thickness: 1),
+              _routeInfoItem(Icons.directions_walk, _route!.durationLabel,
+                  'szac. czas'),
+              const VerticalDivider(width: 24, thickness: 1),
+              _routeInfoItem(
+                  Icons.location_on,
+                  '${_places.where((p) => !p.isSidePoint).length}',
+                  'miejsc'),
+              const VerticalDivider(width: 24, thickness: 1),
+              _buildNavToggle(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
       return Scaffold(
         appBar: AppBar(title: const Text('Generuję trasę...')),
         body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(),
-              const SizedBox(height: 20),
-              Text(
-                _loadingMessage,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 20),
+            Text(_loadingMessage,
                 style: const TextStyle(fontSize: 14, color: Colors.grey),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
+                textAlign: TextAlign.center),
+          ]),
         ),
       );
     }
 
+    final markers = [
+      ..._placeMarkers,
+      _startMarker,
+      if (_endMarker != null) _endMarker!,
+      if (_userMarker != null) _userMarker!,
+    ];
+
     return Scaffold(
-      appBar: AppBar(title: Text(_status)),
-      floatingActionButton: _places.isNotEmpty
+      appBar: _navMode ? null : AppBar(title: Text(_status)),
+      floatingActionButton: (!_navMode && _places.isNotEmpty)
           ? FloatingActionButton.extended(
               onPressed: _showRouteList,
               icon: const Icon(Icons.format_list_numbered),
@@ -370,9 +692,22 @@ class _MapScreenState extends State<MapScreen> {
       body: Stack(
         children: [
           FlutterMap(
+            mapController: _mapController,
             options: MapOptions(
               initialCenter: _mapCenter,
               initialZoom: 14,
+              onMapReady: () {
+                setState(() => _mapReady = true);
+                _startAmbientLocation();
+              },
+              onMapEvent: (event) {
+                if (!_navMode) return;
+                if (event.source == MapEventSource.mapController) return;
+                if (!_freeCam) setState(() => _freeCam = true);
+              },
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.all,
+              ),
             ),
             children: [
               TileLayer(
@@ -381,55 +716,81 @@ class _MapScreenState extends State<MapScreen> {
                 userAgentPackageName: 'com.example.guideai',
               ),
               if (_route != null)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: _route!.points,
-                      color: Colors.blueAccent,
-                      strokeWidth: 4.5,
-                    ),
-                  ],
-                ),
-              MarkerLayer(markers: [
-                ..._placeMarkers,
-                _startMarker,
-                if (_endMarker != null) _endMarker!,
-              ]),
+                PolylineLayer(polylines: [
+                  Polyline(
+                    points: _route!.points,
+                    color: Colors.blueAccent,
+                    strokeWidth: 4.5,
+                  ),
+                ]),
+              MarkerLayer(markers: markers),
             ],
           ),
 
-          // Panel z informacjami o trasie
-          if (_route != null)
+          if (_route != null) _buildInfoPanel(),
+
+          // Off-route warning
+          if (_navMode && _isOffRoute)
             Positioned(
-              top: 12,
+              top: 80,
               left: 16,
-              right: 16,
+              right: 80,
               child: Material(
                 borderRadius: BorderRadius.circular(8),
-                color: Colors.white.withOpacity(0.93),
-                elevation: 2,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 10),
+                color: Colors.amber[700],
+                elevation: 3,
+                child: const Padding(
+                  padding:
+                      EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      _routeInfoItem(Icons.straighten,
-                          _route!.distanceLabel, 'dystans'),
-                      const VerticalDivider(width: 24, thickness: 1),
-                      _routeInfoItem(Icons.directions_walk,
-                          _route!.durationLabel, 'szac. czas'),
-                      const VerticalDivider(width: 24, thickness: 1),
-                      _routeInfoItem(Icons.location_on,
-                          '${_places.where((p) => !p.isSidePoint).length}',
-                          'miejsc'),
+                      Icon(Icons.warning_amber_rounded,
+                          color: Colors.white, size: 18),
+                      SizedBox(width: 8),
+                      Text('Zboczono z trasy',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600)),
                     ],
                   ),
                 ),
               ),
             ),
 
-          // Legenda (ukrywalna)
+          // Heading-up / North-up toggle
+          if (_navMode)
+            Positioned(
+              top: _route != null ? 80 : 16,
+              right: 16,
+              child: FloatingActionButton.small(
+                heroTag: 'compass',
+                onPressed: _toggleHeadingMode,
+                backgroundColor: Colors.white,
+                elevation: 3,
+                child: Icon(
+                  _headingUp ? Icons.explore : Icons.north,
+                  color: Colors.blueAccent,
+                ),
+              ),
+            ),
+
+          // Re-center button — visible when user panned away during navigation
+          if (_navMode && _freeCam)
+            Positioned(
+              bottom: 100,
+              right: 16,
+              child: FloatingActionButton.small(
+                heroTag: 'recenter',
+                onPressed: _recenter,
+                backgroundColor: Colors.white,
+                elevation: 4,
+                child: const Icon(Icons.my_location,
+                    color: Colors.blueAccent),
+              ),
+            ),
+
+          // Legend
           Positioned(
             bottom: 80,
             left: 16,
@@ -440,6 +801,20 @@ class _MapScreenState extends State<MapScreen> {
                   : _buildLegendToggleButton(),
             ),
           ),
+
+          // Proximity popup
+          if (_navMode && _currentPopup != null)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 24,
+              child: NavigationPopup(
+                place: _currentPopup!,
+                category: _categoryFor(_currentPopup!),
+                queueCount: _popupQueue.length,
+                onDismiss: _dismissPopup,
+              ),
+            ),
         ],
       ),
     );
