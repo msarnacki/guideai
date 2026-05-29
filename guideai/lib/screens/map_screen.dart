@@ -68,7 +68,7 @@ class _MapScreenState extends State<MapScreen>
   bool _isOffRoute = false;
   bool _headingUp = true;
 
-  // true = user panned/zoomed manually, auto-follow paused
+  // true when user panned/zoomed manually in nav mode → auto-follow paused
   bool _freeCam = false;
 
   static const _navZoom = 17.0;
@@ -233,10 +233,7 @@ class _MapScreenState extends State<MapScreen>
 
   Future<void> _startNavigation() async {
     if (_route == null) return;
-
-    // Navigation service takes over location; stop ambient tracking.
     _stopAmbientLocation();
-
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
     final service = NavigationService(
@@ -247,7 +244,7 @@ class _MapScreenState extends State<MapScreen>
     final ok = await service.start();
     if (!ok) {
       SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-      _startAmbientLocation(); // restore ambient on failure
+      _startAmbientLocation();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content:
@@ -266,6 +263,7 @@ class _MapScreenState extends State<MapScreen>
       _navMode = true;
       _headingUp = true;
       _freeCam = false;
+      _userPosition = _ambientPosition; // show marker immediately from last known position
     });
   }
 
@@ -291,7 +289,7 @@ class _MapScreenState extends State<MapScreen>
       _popupQueue.clear();
     });
 
-    _startAmbientLocation(); // resume showing position dot
+    _startAmbientLocation();
   }
 
   void _handleNavUpdate(NavigationUpdate update) {
@@ -306,12 +304,19 @@ class _MapScreenState extends State<MapScreen>
     if (_headingUp) _animateMapRotation(-update.bearing);
   }
 
+  // Centers camera on user. In nav mode also resumes auto-follow.
   void _recenter() {
     if (!_mapReady) return;
-    setState(() => _freeCam = false);
-    if (_userPosition != null) {
-      _mapController.move(_userPosition!, _navZoom);
-      if (_headingUp) _animateMapRotation(-_userBearing);
+    if (_navMode) {
+      setState(() => _freeCam = false);
+      if (_userPosition != null) {
+        _mapController.move(_userPosition!, _navZoom);
+        if (_headingUp) _animateMapRotation(-_userBearing);
+      }
+    } else {
+      if (_ambientPosition != null) {
+        _mapController.move(_ambientPosition!, _mapController.camera.zoom);
+      }
     }
   }
 
@@ -440,8 +445,6 @@ class _MapScreenState extends State<MapScreen>
           ]),
         );
 
-  // Navigation: arrow rotated to bearing (compensates for map rotation).
-  // Ambient:    simple blue dot, no direction.
   Marker? get _userMarker {
     if (_navMode) {
       if (_userPosition == null) return null;
@@ -463,14 +466,13 @@ class _MapScreenState extends State<MapScreen>
               ],
             ),
             padding: const EdgeInsets.all(4),
-            child:
-                const Icon(Icons.arrow_upward, color: Colors.white, size: 14),
+            child: const Icon(Icons.arrow_upward,
+                color: Colors.white, size: 14),
           ),
         ),
       );
     }
 
-    // Ambient dot
     if (_ambientPosition == null) return null;
     return Marker(
       point: _ambientPosition!,
@@ -541,8 +543,7 @@ class _MapScreenState extends State<MapScreen>
               const SizedBox(width: 24),
               GestureDetector(
                 onTap: () => setState(() => _legendVisible = false),
-                child:
-                    Icon(Icons.close, size: 14, color: Colors.grey[500]),
+                child: Icon(Icons.close, size: 14, color: Colors.grey[500]),
               ),
             ]),
             const SizedBox(height: 4),
@@ -600,27 +601,6 @@ class _MapScreenState extends State<MapScreen>
     ]);
   }
 
-  Widget _buildNavToggle() {
-    if (_navMode) {
-      return GestureDetector(
-        onTap: _stopNavigation,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.stop_circle_rounded, color: Colors.red[600], size: 28),
-          Text('stop',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-        ]),
-      );
-    }
-    return GestureDetector(
-      onTap: _startNavigation,
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Icons.play_circle_rounded, color: Colors.green, size: 28),
-        Text('nawiguj',
-            style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-      ]),
-    );
-  }
-
   Widget _buildInfoPanel() {
     return Positioned(
       top: 12,
@@ -645,11 +625,72 @@ class _MapScreenState extends State<MapScreen>
                   Icons.location_on,
                   '${_places.where((p) => !p.isSidePoint).length}',
                   'miejsc'),
-              const VerticalDivider(width: 24, thickness: 1),
-              _buildNavToggle(),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  // ── Bottom-right action buttons ───────────────────────────────────────────
+
+  bool get _hasKnownPosition =>
+      _navMode ? _userPosition != null : _ambientPosition != null;
+
+  Widget _buildActionButtons() {
+    final recenterColor =
+        (_navMode && _freeCam) ? Colors.blueAccent : Colors.grey[600]!;
+
+    return Positioned(
+      right: 16,
+      bottom: 24,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Re-center — always visible when position is known
+          if (_hasKnownPosition) ...[
+            FloatingActionButton.small(
+              heroTag: 'recenter',
+              onPressed: _recenter,
+              backgroundColor: Colors.white,
+              elevation: 3,
+              child: Icon(Icons.my_location, color: recenterColor),
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          // Nawiguj / Stop
+          if (_route != null)
+            _navMode
+                ? FloatingActionButton.extended(
+                    heroTag: 'nav_stop',
+                    onPressed: _stopNavigation,
+                    backgroundColor: Colors.red[600],
+                    icon: const Icon(Icons.stop_rounded, color: Colors.white),
+                    label: const Text('Stop',
+                        style: TextStyle(color: Colors.white)),
+                  )
+                : FloatingActionButton.extended(
+                    heroTag: 'nav_start',
+                    onPressed: _startNavigation,
+                    backgroundColor: Colors.green[700],
+                    icon: const Icon(Icons.navigation, color: Colors.white),
+                    label: const Text('Nawiguj',
+                        style: TextStyle(color: Colors.white)),
+                  ),
+
+          // Lista miejsc (only outside nav mode)
+          if (!_navMode && _places.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            FloatingActionButton.extended(
+              heroTag: 'lista',
+              onPressed: _showRouteList,
+              icon: const Icon(Icons.format_list_numbered),
+              label: const Text('Lista miejsc'),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -682,13 +723,6 @@ class _MapScreenState extends State<MapScreen>
 
     return Scaffold(
       appBar: _navMode ? null : AppBar(title: Text(_status)),
-      floatingActionButton: (!_navMode && _places.isNotEmpty)
-          ? FloatingActionButton.extended(
-              onPressed: _showRouteList,
-              icon: const Icon(Icons.format_list_numbered),
-              label: const Text('Lista miejsc'),
-            )
-          : null,
       body: Stack(
         children: [
           FlutterMap(
@@ -727,6 +761,7 @@ class _MapScreenState extends State<MapScreen>
             ],
           ),
 
+          // Route info panel (distance / time / count)
           if (_route != null) _buildInfoPanel(),
 
           // Off-route warning
@@ -758,7 +793,7 @@ class _MapScreenState extends State<MapScreen>
               ),
             ),
 
-          // Heading-up / North-up toggle
+          // Heading-up / North-up toggle (nav mode only)
           if (_navMode)
             Positioned(
               top: _route != null ? 80 : 16,
@@ -775,21 +810,6 @@ class _MapScreenState extends State<MapScreen>
               ),
             ),
 
-          // Re-center button — visible when user panned away during navigation
-          if (_navMode && _freeCam)
-            Positioned(
-              bottom: 100,
-              right: 16,
-              child: FloatingActionButton.small(
-                heroTag: 'recenter',
-                onPressed: _recenter,
-                backgroundColor: Colors.white,
-                elevation: 4,
-                child: const Icon(Icons.my_location,
-                    color: Colors.blueAccent),
-              ),
-            ),
-
           // Legend
           Positioned(
             bottom: 80,
@@ -801,6 +821,9 @@ class _MapScreenState extends State<MapScreen>
                   : _buildLegendToggleButton(),
             ),
           ),
+
+          // Bottom-right action buttons (re-center + nav/stop + lista)
+          _buildActionButtons(),
 
           // Proximity popup
           if (_navMode && _currentPopup != null)
