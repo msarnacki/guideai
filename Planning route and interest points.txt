@@ -1,6 +1,18 @@
 Opisanych zostanie parę aspektów:
-1. Początkowy wybór punktów zainteresowania - na podstawie filtrów z ekranu startowego
+1. Początkowy wybór punktów zainteresowania - na podstawie filtrów z ekranu startowego w MVP, a później też pole do wpisywania innych - jeśli rzeczywiście inne to AI generuje OverpassQL request
+
+przykład do MVP
+Zabytki        → historic=castle, historic=ruins, historic=building
+Pomniki        → historic=monument, historic=memorial
+Muzea          → tourism=museum, tourism=gallery
+Kościoły       → amenity=place_of_worship
+Przyroda       → leisure=park, leisure=garden, natural=peak
+Punkty widok.  → tourism=viewpoint
+Fontanny       → amenity=fountain, man_made=fountain
+Atrakcje       → tourism=attraction
+
 2. Wybranie najciekawszych X punktów na trasie - np. po obfitości opisów danego node'a, ale również może po bliskości do wielu innych node'ów
+
 3. Zaplanowanie trasy o dystansie przybliżonym do tego z filtrów po jak największej liczbie najciekawszych punktów - jeśli za mały dystans to dodaję kolejne pod względem ciekawości
 4. Jeśli są dłuższe przerwy pomiędzy punktami na trasie to sprawdzenie czy są w nich jakieś inne (nietematyczne) ciekawe punkty, o których można opowiedzieć dodatkowo
 5. 

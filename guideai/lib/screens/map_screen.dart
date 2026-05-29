@@ -34,6 +34,7 @@ class _MapScreenState extends State<MapScreen> {
   bool _loading = true;
   String _loadingMessage = 'Szukam ciekawych miejsc...';
   String _status = '';
+  bool _legendVisible = true;
 
   @override
   void initState() {
@@ -61,25 +62,54 @@ class _MapScreenState extends State<MapScreen> {
           targetMeters: widget.targetDistanceMeters,
         );
 
+        setState(() => _loadingMessage = 'Szukam punktów pobocznych...');
+
+        List<InterestPoint> gapFillers = [];
+        try {
+          final broadCandidates = await fetchBroadInterestPoints(
+            widget.startPoint,
+            widget.endPoint!,
+            selectedCategories: widget.categories,
+          );
+          gapFillers = findGapFillers(
+            start: widget.startPoint,
+            end: widget.endPoint!,
+            selectedPlaces: result.selectedPlaces,
+            allExistingPlaces: result.allPlacesOrdered,
+            routePolyline: result.route.points,
+            broadCandidates: broadCandidates,
+          );
+        } catch (_) {
+          // punkty poboczne są opcjonalne
+        }
+
+        final allPlaces = sortPointsByRoute(
+          [...result.allPlacesOrdered, ...gapFillers],
+          result.route.points,
+        );
+
+        final mainCount = result.allPlacesOrdered.length;
+        final sideCount = gapFillers.length;
+
         setState(() {
-          _places = result.allPlacesOrdered;
-          _route  = result.route;
+          _places = allPlaces;
+          _route = result.route;
           _loading = false;
-          _status =
-              '${_places.length} miejsc · ${_route!.distanceLabel} · ${_route!.durationLabel}';
+          _status = '$mainCount miejsc · ${_route!.distanceLabel} · ${_route!.durationLabel}'
+              '${sideCount > 0 ? ' · +$sideCount pobocznych' : ''}';
         });
       } else {
         setState(() {
-          _places  = candidates;
-          _route   = null;
+          _places = candidates;
+          _route = null;
           _loading = false;
-          _status  = 'Znaleziono ${candidates.length} miejsc';
+          _status = 'Znaleziono ${candidates.length} miejsc';
         });
       }
     } catch (e) {
       setState(() {
         _loading = false;
-        _status  = 'Błąd: $e';
+        _status = 'Błąd: $e';
       });
     }
   }
@@ -130,21 +160,36 @@ class _MapScreenState extends State<MapScreen> {
 
   // ── Markery ───────────────────────────────────────────────────────────────
 
-  List<Marker> get _placeMarkers => _places
-      .map((place) => Marker(
+  List<Marker> get _placeMarkers => _places.map((place) {
+        if (place.isSidePoint) {
+          return Marker(
             point: place.position,
-            width: 40,
-            height: 40,
+            width: 28,
+            height: 28,
             child: GestureDetector(
               onTap: () => _showDetails(place),
               child: Icon(
                 Icons.location_on,
-                color: _colorFor(place),
-                size: 36,
+                color: Colors.grey[500],
+                size: 22,
               ),
             ),
-          ))
-      .toList();
+          );
+        }
+        return Marker(
+          point: place.position,
+          width: 40,
+          height: 40,
+          child: GestureDetector(
+            onTap: () => _showDetails(place),
+            child: Icon(
+              Icons.location_on,
+              color: _colorFor(place),
+              size: 36,
+            ),
+          ),
+        );
+      }).toList();
 
   Marker get _startMarker => Marker(
         point: widget.startPoint,
@@ -184,6 +229,8 @@ class _MapScreenState extends State<MapScreen> {
 
   // ── Widgety pomocnicze ────────────────────────────────────────────────────
 
+  bool get _hasSidePoints => _places.any((p) => p.isSidePoint);
+
   Widget _routeInfoItem(IconData icon, String value, String label) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -205,37 +252,14 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  Widget _buildLegend() {
-    return Material(
-      borderRadius: BorderRadius.circular(8),
-      color: Colors.white.withOpacity(0.93),
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _legendItem(Icons.place, Colors.green, 'Start'),
-            if (widget.endPoint != null)
-              _legendItem(Icons.place, Colors.blue, 'Koniec'),
-            const Divider(height: 10, thickness: 0.5),
-            ...widget.categories.map(
-              (cat) => _legendItem(cat.icon, cat.color, cat.label),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _legendItem(IconData icon, Color color, String label) {
+  Widget _legendItem(IconData icon, Color color, String label,
+      {double iconSize = 16}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: color, size: 16),
+          Icon(icon, color: color, size: iconSize),
           const SizedBox(width: 6),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 140),
@@ -246,6 +270,68 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLegend() {
+    return Material(
+      key: const ValueKey('legend'),
+      borderRadius: BorderRadius.circular(8),
+      color: Colors.white.withOpacity(0.93),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 8, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Legenda',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey,
+                        fontWeight: FontWeight.w500)),
+                const SizedBox(width: 24),
+                GestureDetector(
+                  onTap: () => setState(() => _legendVisible = false),
+                  child: Icon(Icons.close, size: 14, color: Colors.grey[500]),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            _legendItem(Icons.place, Colors.green, 'Start'),
+            if (widget.endPoint != null)
+              _legendItem(Icons.place, Colors.blue, 'Koniec'),
+            const Divider(height: 10, thickness: 0.5),
+            ...widget.categories.map(
+              (cat) => _legendItem(cat.icon, cat.color, cat.label),
+            ),
+            if (_hasSidePoints) ...[
+              const Divider(height: 10, thickness: 0.5),
+              _legendItem(Icons.location_on, const Color(0xFF9E9E9E), 'Punkt poboczny',
+                  iconSize: 13),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLegendToggleButton() {
+    return GestureDetector(
+      key: const ValueKey('legend-btn'),
+      onTap: () => setState(() => _legendVisible = true),
+      child: Material(
+        borderRadius: BorderRadius.circular(20),
+        color: Colors.white.withOpacity(0.93),
+        elevation: 2,
+        child: const Padding(
+          padding: EdgeInsets.all(8),
+          child: Icon(Icons.layers, size: 20, color: Colors.blueAccent),
+        ),
       ),
     );
   }
@@ -335,18 +421,24 @@ class _MapScreenState extends State<MapScreen> {
                           _route!.durationLabel, 'szac. czas'),
                       const VerticalDivider(width: 24, thickness: 1),
                       _routeInfoItem(Icons.location_on,
-                          '${_places.length}', 'miejsc'),
+                          '${_places.where((p) => !p.isSidePoint).length}',
+                          'miejsc'),
                     ],
                   ),
                 ),
               ),
             ),
 
-          // Legenda
+          // Legenda (ukrywalna)
           Positioned(
-            bottom: 80, // powyżej FAB
+            bottom: 80,
             left: 16,
-            child: _buildLegend(),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              child: _legendVisible
+                  ? _buildLegend()
+                  : _buildLegendToggleButton(),
+            ),
           ),
         ],
       ),

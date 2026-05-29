@@ -40,6 +40,15 @@ class RouteListSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Pre-oblicz numery tylko dla głównych miejsc
+    int mainNum = 0;
+    final numbered = places.map((p) {
+      return (place: p, number: p.isSidePoint ? null : ++mainNum);
+    }).toList();
+
+    final mainCount = mainNum;
+    final sideCount = places.where((p) => p.isSidePoint).length;
+
     return DraggableScrollableSheet(
       initialChildSize: 0.55,
       minChildSize: 0.3,
@@ -72,15 +81,19 @@ class RouteListSheet extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        isOrdered ? 'Trasa — kolejność odwiedzin' : 'Znalezione miejsca',
+                        isOrdered
+                            ? 'Trasa — kolejność odwiedzin'
+                            : 'Znalezione miejsca',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       Text(
-                        '${places.length} ${_placesLabel(places.length)}',
-                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                        '$mainCount ${_placesLabel(mainCount)}'
+                        '${sideCount > 0 ? ' · $sideCount pobocznych' : ''}',
+                        style:
+                            TextStyle(fontSize: 12, color: Colors.grey[600]),
                       ),
                     ],
                   ),
@@ -97,13 +110,23 @@ class RouteListSheet extends StatelessWidget {
                 ? const Center(child: Text('Brak miejsc do wyświetlenia'))
                 : ListView.separated(
                     controller: controller,
-                    itemCount: places.length,
-                    separatorBuilder: (_, __) =>
-                        const Divider(height: 1, indent: 72),
+                    itemCount: numbered.length,
+                    separatorBuilder: (_, i) {
+                      final isSide = numbered[i].place.isSidePoint;
+                      return Divider(
+                        height: 1,
+                        indent: isSide ? 52 : 72,
+                        color: isSide ? Colors.grey[200] : null,
+                      );
+                    },
                     itemBuilder: (ctx, index) {
-                      final place    = places[index];
+                      final (:place, :number) = numbered[index];
                       final category = _categoryFor(place);
-                      final color    = category?.color ?? Colors.grey;
+                      final color = category?.color ?? Colors.grey;
+
+                      if (place.isSidePoint) {
+                        return _buildSideItem(ctx, place, category);
+                      }
 
                       return ListTile(
                         contentPadding: const EdgeInsets.symmetric(
@@ -114,7 +137,7 @@ class RouteListSheet extends StatelessWidget {
                           radius: 18,
                           backgroundColor: color,
                           child: Text(
-                            '${index + 1}',
+                            '$number',
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 13,
@@ -136,7 +159,8 @@ class RouteListSheet extends StatelessWidget {
                                   const SizedBox(width: 4),
                                   Text(
                                     category.label,
-                                    style: TextStyle(fontSize: 12, color: color),
+                                    style:
+                                        TextStyle(fontSize: 12, color: color),
                                   ),
                                 ],
                               )
@@ -151,6 +175,35 @@ class RouteListSheet extends StatelessWidget {
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSideItem(
+      BuildContext context, InterestPoint place, InterestCategory? category) {
+    return ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.fromLTRB(28, 0, 8, 0),
+      leading: Icon(
+        Icons.fiber_manual_record,
+        size: 10,
+        color: Colors.grey[400],
+      ),
+      title: Text(
+        place.name,
+        style: TextStyle(
+          fontSize: 12,
+          color: Colors.grey[700],
+        ),
+      ),
+      subtitle: Text(
+        category != null ? category.label : 'Punkt poboczny',
+        style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+      ),
+      trailing: IconButton(
+        icon: Icon(Icons.info_outline, size: 16, color: Colors.grey[400]),
+        tooltip: 'Szczegóły',
+        onPressed: () => _openDetails(context, place),
       ),
     );
   }

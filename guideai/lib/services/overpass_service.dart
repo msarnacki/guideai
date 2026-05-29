@@ -99,6 +99,66 @@ out center 100;
 ''';
 }
 
+/// Pobiera punkty ze wszystkich kategorii których user NIE wybrał — do zapełnienia luk.
+Future<List<InterestPoint>> fetchBroadInterestPoints(
+  LatLng start,
+  LatLng end, {
+  required List<InterestCategory> selectedCategories,
+}) async {
+  final remaining = kInterestCategories
+      .where((cat) => !selectedCategories.any((s) => s.id == cat.id))
+      .toList();
+  if (remaining.isEmpty) return [];
+
+  final query = _buildBboxQuery(start, end, remaining);
+  final encoded = Uri.encodeComponent(query);
+  final url = 'https://overpass-api.de/api/interpreter?data=$encoded';
+
+  final response = await http.get(
+    Uri.parse(url),
+    headers: {'User-Agent': 'GuideAI/1.0 (test@test.com)'},
+  );
+
+  if (response.statusCode != 200) {
+    throw Exception('Błąd HTTP: ${response.statusCode}');
+  }
+
+  final data = json.decode(response.body);
+  final elements = data['elements'] as List;
+
+  final places = <InterestPoint>[];
+  for (final el in elements) {
+    double? elLat, elLon;
+    if (el['type'] == 'node') {
+      elLat = el['lat']?.toDouble();
+      elLon = el['lon']?.toDouble();
+    } else if (el['center'] != null) {
+      elLat = el['center']['lat']?.toDouble();
+      elLon = el['center']['lon']?.toDouble();
+    }
+    if (elLat == null || elLon == null) continue;
+
+    final tags = Map<String, dynamic>.from(el['tags'] as Map? ?? {});
+    final categoryId = _detectCategoryId(tags, remaining);
+    final name = tags['name'] ??
+        tags['historic'] ??
+        tags['tourism'] ??
+        tags['amenity'] ??
+        tags['leisure'] ??
+        'Brak nazwy';
+
+    places.add(InterestPoint(
+      position: LatLng(elLat, elLon),
+      name: name,
+      categoryId: categoryId,
+      tags: tags,
+      isSidePoint: true,
+    ));
+  }
+
+  return places;
+}
+
 /// Bounding box okalający oba punkty + 15% paddingu z każdej strony.
 String _buildBboxQuery(
   LatLng start,

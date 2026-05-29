@@ -2,12 +2,13 @@ import 'dart:math';
 import 'package:latlong2/latlong.dart';
 import '../models/interest_point.dart';
 import '../models/planner_result.dart';
+import '../models/route_result.dart';
 import 'routing_service.dart';
 
 // ── Stałe ─────────────────────────────────────────────────────────────────────
 
-/// Współczynnik drogi vs linia prosta (typowo 1.2–1.4 dla miast).
-const double _roadFactor = 1.3;
+/// Współczynnik drogi vs linia prosta. Europejskie centra miast: 1.4–1.6.
+const double _roadFactor = 1.5;
 
 /// Minimalna odległość między miejscami — bliżej = duplikat/skupisko.
 const double _minPlaceDistMeters = 80.0;
@@ -36,9 +37,13 @@ Future<PlannerResult> planRoute({
   final dedupeResult = _deduplicate(candidates);
   final deduped = dedupeResult.candidates;
   final sidelined = dedupeResult.sidelined;
+  final clusterSizes = dedupeResult.clusterSizes;
 
-  // 1b. Filtruj słabo opisane punkty
-  final rich = deduped.where((p) => _richnessScore(p.tags) >= _minRichnessScore).toList();
+  // 1b. Filtruj słabo opisane punkty (uwzględnia też gęstość skupiska)
+  final rich = deduped.where((p) {
+    final densityBonus = ((clusterSizes[p] ?? 1) - 1).clamp(0, 3);
+    return _richnessScore(p.tags) + densityBonus >= _minRichnessScore;
+  }).toList();
 
   // 2. Sortuj: im bliżej linii A→B, tym wyższy priorytet
   final sorted = [...rich]
@@ -80,7 +85,26 @@ Future<PlannerResult> planRoute({
   }
 
   // 4. Zapytanie do OSRM z finalną listą waypointów → realny dystans
-  final route = await fetchRouteMulti(waypoints);
+  RouteResult route = await fetchRouteMulti(waypoints);
+
+  // 4b. Post-trim: jeśli realna trasa przekracza cel o >10%, usuń
+  //     punkt z minimalnym detourem i powtórz zapytanie OSRM.
+  while (route.distanceMeters > targetMeters * 1.1 && waypoints.length > 2) {
+    int removeIdx = 1;
+    double minDetour = double.infinity;
+    for (int i = 1; i < waypoints.length - 1; i++) {
+      final detour = _haversine(waypoints[i - 1], waypoints[i]) +
+          _haversine(waypoints[i], waypoints[i + 1]) -
+          _haversine(waypoints[i - 1], waypoints[i + 1]);
+      if (detour < minDetour) {
+        minDetour = detour;
+        removeIdx = i;
+      }
+    }
+    waypoints.removeAt(removeIdx);
+    selected.removeAt(removeIdx - 1);
+    route = await fetchRouteMulti(waypoints);
+  }
 
   // Przywróć kolejność miejsc zgodną z kolejnością waypointów na trasie.
   final orderedSelected = <InterestPoint>[];
@@ -111,6 +135,98 @@ Future<PlannerResult> planRoute({
   );
 }
 
+// ── Gap fillers ────────────────────────────────────────────────────────────────
+
+/// Minimalna odległość między kolejnymi waypointami uznana za "lukę".
+const double _gapThresholdMeters = 400.0;
+
+/// Maksymalny dystans punktu pobocznego od polilinii trasy w obrębie luki.
+const double _gapMaxRouteDistMeters = 80.0;
+
+/// Minimalna odległość punktu pobocznego od każdego istniejącego punktu/waypointu.
+const double _gapExclusionRadius = 200.0;
+
+/// Maks. liczba punktów pobocznych na jedną lukę.
+const int _gapMaxPerGap = 3;
+
+/// Wykrywa odcinki trasy dłuższe niż [_gapThresholdMeters] i zwraca
+/// najciekawsze punkty z [broadCandidates] leżące bezpośrednio przy tych odcinkach.
+/// Punkty już na trasie (w [allExistingPlaces]) są wykluczone.
+List<InterestPoint> findGapFillers({
+  required LatLng start,
+  required LatLng end,
+  required List<InterestPoint> selectedPlaces,
+  required List<InterestPoint> allExistingPlaces,
+  required List<LatLng> routePolyline,
+  required List<InterestPoint> broadCandidates,
+}) {
+  if (routePolyline.length < 2 || broadCandidates.isEmpty) return [];
+
+  final mainWaypoints = [
+    start,
+    ...selectedPlaces.map((p) => p.position),
+    end,
+  ];
+
+  final gaps = <(int, int)>[];
+  for (int i = 0; i < mainWaypoints.length - 1; i++) {
+    if (_haversine(mainWaypoints[i], mainWaypoints[i + 1]) > _gapThresholdMeters) {
+      gaps.add((i, i + 1));
+    }
+  }
+  if (gaps.isEmpty) return [];
+
+  // Dołącz start i end — to LatLng, nie InterestPoint, więc wymagają osobnej listy
+  final existingPositions = [
+    start,
+    end,
+    ...allExistingPlaces.map((p) => p.position),
+  ];
+  final addedPositions = <LatLng>{};
+  final result = <InterestPoint>[];
+
+  for (final (idxA, idxB) in gaps) {
+    final wpA = mainWaypoints[idxA];
+    final wpB = mainWaypoints[idxB];
+
+    final segA = _closestSegmentIndex(wpA, routePolyline);
+    final segB = _closestSegmentIndex(wpB, routePolyline);
+    final fromSeg = min(segA, segB);
+    final toSeg = max(segA, segB);
+    if (toSeg <= fromSeg) continue;
+
+    final gapPoly = routePolyline.sublist(fromSeg, min(toSeg + 2, routePolyline.length));
+    if (gapPoly.length < 2) continue;
+
+    final gapCandidates = broadCandidates.where((p) {
+      if (addedPositions.contains(p.position)) return false;
+      if (existingPositions.any((pos) => _haversine(p.position, pos) < _gapExclusionRadius)) {
+        return false;
+      }
+      for (int i = 0; i < gapPoly.length - 1; i++) {
+        if (_pointToSegmentDist(p.position, gapPoly[i], gapPoly[i + 1]) <= _gapMaxRouteDistMeters) {
+          return true;
+        }
+      }
+      return false;
+    }).toList();
+
+    gapCandidates.sort((a, b) => _richnessScore(b.tags).compareTo(_richnessScore(a.tags)));
+
+    final top = gapCandidates.take(_gapMaxPerGap).toList();
+    for (final p in top) { addedPositions.add(p.position); }
+    result.addAll(top);
+  }
+
+  return _sortByRouteProgress(result, routePolyline);
+}
+
+/// Sortuje listę miejsc wg postępu wzdłuż polilinii trasy (publiczny wrapper).
+List<InterestPoint> sortPointsByRoute(
+  List<InterestPoint> places,
+  List<LatLng> polyline,
+) => _sortByRouteProgress(places, polyline);
+
 // ── Funkcje pomocnicze ─────────────────────────────────────────────────────────
 
 /// Odległość haversine w metrach między dwoma punktami.
@@ -140,23 +256,43 @@ double _estimateDistance(List<LatLng> waypoints) {
 }
 
 /// Rozdziela miejsca na kandydatów trasy i odsunięte skupiska (< [_minPlaceDistMeters]).
-/// Odsunięte punkty mogą później trafić na mapę jako pobliskie atrakcje.
-({List<InterestPoint> candidates, List<InterestPoint> sidelined})
-    _deduplicate(List<InterestPoint> places) {
+/// Pre-sortuje malejąco po richness + density, więc greedy wybiera najlepszego
+/// reprezentanta z każdego skupiska. Zwraca też rozmiary skupisk (do filtru bogactwa).
+({
+  List<InterestPoint> candidates,
+  List<InterestPoint> sidelined,
+  Map<InterestPoint, int> clusterSizes,
+}) _deduplicate(List<InterestPoint> places) {
+  // Pre-sort: najlepszy punkt z klastra trafi jako pierwszy i zostanie reprezentantem
+  final scored = [...places]..sort((a, b) {
+      final da = _countNeighbors(a, places).clamp(0, 3);
+      final db = _countNeighbors(b, places).clamp(0, 3);
+      return (_richnessScore(b.tags) + db).compareTo(_richnessScore(a.tags) + da);
+    });
+
   final candidates = <InterestPoint>[];
   final sidelined = <InterestPoint>[];
-  for (final place in places) {
-    final tooClose = candidates.any(
+  final clusterSizes = <InterestPoint, int>{};
+
+  for (final place in scored) {
+    final rep = candidates.firstWhere(
       (p) => _haversine(p.position, place.position) < _minPlaceDistMeters,
+      orElse: () => place,
     );
-    if (tooClose) {
+    if (rep != place) {
       sidelined.add(place);
+      clusterSizes[rep] = (clusterSizes[rep] ?? 1) + 1;
     } else {
       candidates.add(place);
+      clusterSizes[place] = 1;
     }
   }
-  return (candidates: candidates, sidelined: sidelined);
+  return (candidates: candidates, sidelined: sidelined, clusterSizes: clusterSizes);
 }
+
+/// Liczy sąsiadów punktu [p] w promieniu [_minPlaceDistMeters].
+int _countNeighbors(InterestPoint p, List<InterestPoint> all) =>
+    all.where((q) => q != p && _haversine(p.position, q.position) < _minPlaceDistMeters).length;
 
 /// Zwraca punkty z [sidelined] leżące ≤ [maxDistMeters] od polilinii trasy,
 /// posortowane wzdłuż trasy.
