@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:location/location.dart';
 import '../models/interest_category.dart';
-import 'pick_location_screen.dart';
+import 'route_picker_screen.dart';
 import 'map_screen.dart';
 
 class FiltersScreen extends StatefulWidget {
@@ -13,126 +12,42 @@ class FiltersScreen extends StatefulWidget {
 }
 
 class _FiltersScreenState extends State<FiltersScreen> {
-  // Punkt startowy
   LatLng? _startPoint;
-  bool _loadingStartLocation = false;
   String? _startLabel;
 
-  // Punkt końcowy
   LatLng? _endPoint;
-  bool _loadingEndLocation = false;
   String? _endLabel;
+  bool _isLoop = false;
 
-  // Dystans
   double _distanceKm = 5.0;
 
-  // Wybrane kategorie (max 3)
   final Set<String> _selectedCategories = {};
-
   static const int _maxCategories = 3;
 
-  // ── GPS: pobierz aktualną lokalizację ──────────────────────────────────────
-  Future<LatLng?> _getGpsLocation() async {
-    final location = Location();
-
-    bool serviceEnabled = await location.serviceEnabled();
-    if (!serviceEnabled) {
-      serviceEnabled = await location.requestService();
-      if (!serviceEnabled) throw Exception('Usługi lokalizacji wyłączone');
-    }
-
-    PermissionStatus permission = await location.hasPermission();
-    if (permission == PermissionStatus.denied) {
-      permission = await location.requestPermission();
-      if (permission != PermissionStatus.granted) {
-        throw Exception('Brak uprawnień do lokalizacji');
-      }
-    }
-
-    final pos = await location.getLocation();
-    return LatLng(pos.latitude!, pos.longitude!);
-  }
-
-  String _coordLabel(LatLng point) =>
-      '${point.latitude.toStringAsFixed(4)}, ${point.longitude.toStringAsFixed(4)}';
-
-  // ── Punkt startowy: GPS ────────────────────────────────────────────────────
-  Future<void> _useMyLocationAsStart() async {
-    setState(() => _loadingStartLocation = true);
-    try {
-      final pos = await _getGpsLocation();
-      setState(() {
-        _startPoint = pos;
-        _startLabel = 'Twoja lokalizacja (${_coordLabel(pos!)})';
-        _loadingStartLocation = false;
-      });
-    } catch (e) {
-      setState(() => _loadingStartLocation = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Błąd: $e')));
-      }
-    }
-  }
-
-  // ── Punkt startowy: mapa ───────────────────────────────────────────────────
-  Future<void> _pickStartFromMap() async {
-    final center = _startPoint ?? const LatLng(52.2297, 21.0122);
-    final result = await Navigator.push<LatLng>(
+  Future<void> _pickRoute() async {
+    final result = await Navigator.push<RouteSelection>(
       context,
       MaterialPageRoute(
-        builder: (_) => PickLocationScreen(
-          initialCenter: center,
-          title: 'Wybierz punkt startowy',
+        builder: (_) => RoutePickerScreen(
+          initialStart: _startPoint,
+          initialStartLabel: _startLabel,
+          initialEnd: _endPoint,
+          initialEndLabel: _endLabel,
+          initialLoop: _isLoop,
         ),
       ),
     );
     if (result != null) {
       setState(() {
-        _startPoint = result;
-        _startLabel = 'Z mapy (${_coordLabel(result)})';
+        _startPoint = result.start;
+        _startLabel = result.startLabel;
+        _isLoop = result.isLoop;
+        _endPoint = _isLoop ? null : result.end;
+        _endLabel = _isLoop ? null : result.endLabel;
       });
     }
   }
 
-  // ── Punkt końcowy: GPS ─────────────────────────────────────────────────────
-  Future<void> _useMyLocationAsEnd() async {
-    setState(() => _loadingEndLocation = true);
-    try {
-      final pos = await _getGpsLocation();
-      setState(() {
-        _endPoint = pos;
-        _endLabel = 'Twoja lokalizacja (${_coordLabel(pos!)})';
-        _loadingEndLocation = false;
-      });
-    } catch (e) {
-      setState(() => _loadingEndLocation = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Błąd: $e')));
-      }
-    }
-  }
-
-  // ── Punkt końcowy: mapa ────────────────────────────────────────────────────
-  Future<void> _pickEndFromMap() async {
-    final center = _endPoint ?? _startPoint ?? const LatLng(52.2297, 21.0122);
-    final result = await Navigator.push<LatLng>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PickLocationScreen(
-          initialCenter: center,
-          title: 'Wybierz punkt końcowy',
-        ),
-      ),
-    );
-    if (result != null) {
-      setState(() {
-        _endPoint = result;
-        _endLabel = 'Z mapy (${_coordLabel(result)})';
-      });
-    }
-  }
-
-  // ── Generuj ────────────────────────────────────────────────────────────────
   void _onGenerate() {
     if (_startPoint == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -156,29 +71,10 @@ class _FiltersScreenState extends State<FiltersScreen> {
       MaterialPageRoute(
         builder: (_) => MapScreen(
           startPoint: _startPoint!,
-          endPoint: _endPoint,
+          endPoint: _isLoop ? _startPoint : _endPoint,
           targetDistanceMeters: _distanceKm * 1000,
           categories: categories,
         ),
-      ),
-    );
-  }
-
-  // ── Pomocnicze widgety ─────────────────────────────────────────────────────
-  Widget _selectedPointInfo(String label) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Row(
-        children: [
-          const Icon(Icons.check_circle, color: Colors.green, size: 16),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              label,
-              style: const TextStyle(color: Colors.green, fontSize: 13),
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -188,32 +84,98 @@ class _FiltersScreenState extends State<FiltersScreen> {
         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
       );
 
-  Widget _locationButtons({
-    required bool loading,
-    required VoidCallback onGps,
-    required VoidCallback onMap,
-  }) {
+  Widget _routeSection() {
+    final hasRoute = _startPoint != null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            _sectionTitle('Trasa'),
+            const Spacer(),
+            if (hasRoute)
+              TextButton.icon(
+                onPressed: _pickRoute,
+                icon: const Icon(Icons.edit_location_alt, size: 18),
+                label: const Text('Zmień'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (!hasRoute)
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _pickRoute,
+              icon: const Icon(Icons.add_location_alt),
+              label: const Text('Ustaw punkt startowy i końcowy'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+            ),
+          )
+        else
+          Card(
+            margin: EdgeInsets.zero,
+            child: InkWell(
+              onTap: _pickRoute,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: Column(
+                  children: [
+                    _routeRow(
+                      Icons.trip_origin,
+                      Colors.green,
+                      'Start',
+                      _startLabel ?? '',
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(left: 9),
+                      child: SizedBox(
+                        height: 10,
+                        child: VerticalDivider(thickness: 1.5, width: 2),
+                      ),
+                    ),
+                    _routeRow(
+                      _isLoop ? Icons.loop : Icons.location_on,
+                      _isLoop ? Colors.orange : (_endPoint != null ? Colors.red : Colors.grey),
+                      'Koniec',
+                      _isLoop
+                          ? 'Pętla (= punkt startowy)'
+                          : (_endLabel ?? 'Nie ustawiono — trasa otwarta'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _routeRow(IconData icon, Color color, String title, String value) {
     return Row(
       children: [
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: loading ? null : onGps,
-            icon: loading
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.my_location),
-            label: const Text('Moja lokalizacja'),
+        Icon(icon, color: color, size: 20),
+        const SizedBox(width: 8),
+        Text(
+          '$title: ',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: color,
           ),
         ),
-        const SizedBox(width: 8),
         Expanded(
-          child: OutlinedButton.icon(
-            onPressed: onMap,
-            icon: const Icon(Icons.map_outlined),
-            label: const Text('Wybierz z mapy'),
+          child: Text(
+            value,
+            style: const TextStyle(fontSize: 13),
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],
@@ -294,41 +256,14 @@ class _FiltersScreenState extends State<FiltersScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── Punkt startowy ────────────────────────────────────────
-                  _sectionTitle('Punkt startowy'),
-                  const SizedBox(height: 12),
-                  _locationButtons(
-                    loading: _loadingStartLocation,
-                    onGps: _useMyLocationAsStart,
-                    onMap: _pickStartFromMap,
-                  ),
-                  if (_startLabel != null) _selectedPointInfo(_startLabel!),
+                  _routeSection(),
 
                   const SizedBox(height: 28),
 
-                  // ── Punkt końcowy ─────────────────────────────────────────
-                  _sectionTitle('Punkt końcowy'),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Opcjonalny — wymagany do planowania trasy przez miejsca',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 12),
-                  _locationButtons(
-                    loading: _loadingEndLocation,
-                    onGps: _useMyLocationAsEnd,
-                    onMap: _pickEndFromMap,
-                  ),
-                  if (_endLabel != null) _selectedPointInfo(_endLabel!),
-
-                  const SizedBox(height: 28),
-
-                  // ── Kategorie ─────────────────────────────────────────────
                   _categoriesSection(),
 
                   const SizedBox(height: 28),
 
-                  // ── Dystans ───────────────────────────────────────────────
                   _sectionTitle('Dystans spaceru'),
                   const SizedBox(height: 4),
                   const Text(
@@ -365,7 +300,6 @@ class _FiltersScreenState extends State<FiltersScreen> {
             ),
           ),
 
-          // ── Przycisk Generuj (zawsze widoczny na dole) ────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
             child: SizedBox(
